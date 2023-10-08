@@ -39,16 +39,15 @@ int main(void)
 
     // Open video file
     AVFormatContext *pFormatContext = avformat_alloc_context(); // = NULL ?
-    avformat_open_input(&pFormatContext, "1.mov", NULL, NULL); //This reads the header (maybe not codec)
+    avformat_open_input(&pFormatContext, "84.mp4", NULL, NULL); //This reads the header (maybe not codec)
     // printf("Format %s, duration %lld us", pFormatContext->iformat->long_name, pFormatContext->duration);
     avformat_find_stream_info(pFormatContext, NULL); //get streams
-    // AVStream *videoStream = NULL;
 
     //TODO - Support Audio ???
     // Find video stream
     int videoStreamIndex = -1;
     // For each stream, we're going to keep the AVCodecParameters, which describes the properties of a codec used by the stream i.
-    for (int i = 0; i < pFormatContext->nb_streams; i++) {
+    for (u32 i = 0; i < pFormatContext->nb_streams; i++) {
         if (pFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             videoStreamIndex = i;
             break;
@@ -69,8 +68,8 @@ int main(void)
     avcodec_parameters_to_context(pVideoCodecCtx, pVideoCodecParams);
     avcodec_open2(pVideoCodecCtx, pVideoCodec, NULL);
 
-    int VideoWidth = pVideoCodecCtx->width;
-    int VideoHeight = pVideoCodecCtx->height;
+    u32 VideoWidth = pVideoCodecCtx->width;
+    u32 VideoHeight = pVideoCodecCtx->height;
 
     struct SwsContext *img_convert_ctx = sws_alloc_context();
     struct SwsContext *sws_ctx         = NULL;
@@ -94,17 +93,17 @@ int main(void)
 
 #if 1
 
-    uint64_t frame = 0;
-    int FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
+    u32 FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
     double curr_time = 0;
     double time_base = av_q2d(VideoStream->time_base);
     double duration = (double)VideoStream->duration*time_base;
-    SetTargetFPS(FPS);
 
     AVPacket *pPacket = av_packet_alloc(); //pPacket holds data buffer reference and more
     AVFrame *pFrame = av_frame_alloc();
-
-    while (!WindowShouldClose())            // Detect window close button or ESC key
+    double TotalTime = 0;
+    SetTargetFPS(FPS);  // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
+                        // it will also delay the sound frames.. making the video slow down
+    while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         Vector2 mouse = GetMousePosition();  
         Controller();
@@ -116,8 +115,7 @@ int main(void)
 
             if (pPacket->stream_index == videoStreamIndex) 
             {
-                frame++;
-                // Decode video frame
+                // // Decode video frame
                 avcodec_send_packet(pVideoCodecCtx, pPacket);
                 avcodec_receive_frame(pVideoCodecCtx, pFrame);
 
@@ -130,13 +128,20 @@ int main(void)
             }
         }
 
-            BeginDrawing();
+        if (pPacket->stream_index == videoStreamIndex) // Necessary for SetTargetFPS
+        {
+            BeginDrawing(); 
                 ClearBackground(RAYWHITE);
                 DrawTexturePro(texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
                         (Rectangle){0, 0, SCREEN_WIDTH, SCREEN_HEIGHT - 100}, (Vector2){0, 0}, 0, WHITE);
                 DrawText(TextFormat("Time: %.2f / %.2f", curr_time, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
-                DrawFPS(0, 0);
+                DrawText(TextFormat("FPS: %d / %d", GetFPS(), FPS), 0, 0, 20, WHITE);
+                DrawText(TextFormat("Time Ray: %lf",TotalTime), SCREEN_WIDTH-200, 20, 20, WHITE);
+                DrawFPS(0,30);
+                TotalTime += GetFrameTime();
             EndDrawing();    
+        }
+
 
         av_packet_unref(pPacket);
     }
