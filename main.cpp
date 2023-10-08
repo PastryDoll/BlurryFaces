@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>         // Required for: malloc() and free()
 #include <time.h>
+#include <unistd.h>
 
 extern "C" {
     #include <libavcodec/avcodec.h>
@@ -25,11 +26,16 @@ typedef int64_t s64;
 #define SCREEN_WIDTH 1000
 #define SCREEN_HEIGHT 600
 
-int pause = 0;
+bool stop = false; // Name pause is taken by unistd
 
 void Controller(void)
 {
-    if (IsKeyPressed(KEY_SPACE)) pause = (pause == 0)? 1 : 0;
+    if (IsKeyPressed(KEY_SPACE))
+    {
+        // stop = (stop == 0)? 1 : 0;
+        stop = !stop;
+        printf("Pause: %i\n", stop);
+    }
 }
 
 // Function to clamp a value between a minimum and maximum
@@ -103,22 +109,22 @@ int main(void)
     double TotalTime = 0;
     SetTargetFPS(FPS);  // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
                         // it will also delay the sound frames.. making the video slow down
+
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         Vector2 mouse = GetMousePosition();  
         Controller();
 
-        // TODO - Check if there is a bug here with the pause.. 
-        if (!pause)
-        {
+        // TODO - Pause is broken.. 
+        if (!stop)
+        {   
             if (av_read_frame(pFormatContext, pPacket) < 0){break;}
 
             if (pPacket->stream_index == videoStreamIndex) 
             {
-                // // Decode video frame
+                // Decode video frame
                 avcodec_send_packet(pVideoCodecCtx, pPacket);
                 avcodec_receive_frame(pVideoCodecCtx, pFrame);
-
                 curr_time = ((double)pFrame->pts)*time_base;
 
                 // Convert the YUV frame to RGB for Texture
@@ -141,9 +147,12 @@ int main(void)
                 TotalTime += GetFrameTime();
             EndDrawing();    
         }
-
-
+        else{
+            Controller();
+            printf("NOT VIDEO\n");
+        }
         av_packet_unref(pPacket);
+
     }
 
     // Cleanup resources
