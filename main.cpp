@@ -24,6 +24,14 @@ typedef int64_t s64;
 
 #define SCREEN_WIDTH 1000
 #define SCREEN_HEIGHT 600
+
+int pause = 0;
+
+void Controller(void)
+{
+    if (IsKeyPressed(KEY_SPACE)) pause = (pause == 0)? 1 : 0;
+}
+
 // Function to clamp a value between a minimum and maximum
 int main(void)
 {
@@ -98,21 +106,29 @@ int main(void)
 
     while (!WindowShouldClose())            // Detect window close button or ESC key
     {
-        if (av_read_frame(pFormatContext, pPacket) < 0){break;}
-    
-        if (pPacket->stream_index == videoStreamIndex) 
+        Vector2 mouse = GetMousePosition();  
+        Controller();
+
+        // TODO - Check if there is a bug here with the pause.. 
+        if (!pause)
         {
-            frame++;
-            // Decode video frame
-            avcodec_send_packet(pVideoCodecCtx, pPacket);
-            avcodec_receive_frame(pVideoCodecCtx, pFrame);
-            curr_time = ((double)pFrame->pts)*time_base;
+            if (av_read_frame(pFormatContext, pPacket) < 0){break;}
 
+            if (pPacket->stream_index == videoStreamIndex) 
+            {
+                frame++;
+                // Decode video frame
+                avcodec_send_packet(pVideoCodecCtx, pPacket);
+                avcodec_receive_frame(pVideoCodecCtx, pFrame);
 
-            // Convert the YUV frame to RGB for Texture
-            sws_scale(sws_ctx, pFrame->data, pFrame->linesize, 0,
-                        pFrame->height, pRGBFrame->data, pRGBFrame->linesize);
-            UpdateTexture(texture, pRGBFrame->data[0]);
+                curr_time = ((double)pFrame->pts)*time_base;
+
+                // Convert the YUV frame to RGB for Texture
+                sws_scale(sws_ctx, pFrame->data, pFrame->linesize, 0,
+                            pFrame->height, pRGBFrame->data, pRGBFrame->linesize);
+                UpdateTexture(texture, pRGBFrame->data[0]);
+            }
+        }
 
             BeginDrawing();
                 ClearBackground(RAYWHITE);
@@ -120,8 +136,8 @@ int main(void)
                         (Rectangle){0, 0, SCREEN_WIDTH, SCREEN_HEIGHT - 100}, (Vector2){0, 0}, 0, WHITE);
                 DrawText(TextFormat("Time: %.2f / %.2f", curr_time, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawFPS(0, 0);
-            EndDrawing();
-        }
+            EndDrawing();    
+
         av_packet_unref(pPacket);
     }
 
