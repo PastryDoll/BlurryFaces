@@ -82,13 +82,14 @@ void Controller(void)
 
 frame_work_queue_entry FrameQueue[1000];
 static u32 volatile FrameNextEntryToFill;
+static bool volatile DecodingThread = true;
 
 void* DoDecoding(void* arg)
 {      
     VideoDecodingCtx *DecodingCtx = (VideoDecodingCtx *)arg;
     AVFrame* Frame;
 
-    for (;;)
+    while (DecodingThread)
     {
         if (av_read_frame(DecodingCtx->pFormatContext, DecodingCtx->pPacket) < 0){break;}
 
@@ -105,6 +106,8 @@ void* DoDecoding(void* arg)
 
         }
     }
+
+    pthread_exit(NULL);
 }
 
 // Function to clamp a value between a minimum and maximum
@@ -184,8 +187,6 @@ int main(void)
     double time_base = av_q2d(VideoStream->time_base);
     double duration = (double)VideoStream->duration*time_base;
 
-    // AVPacket *pPacket = av_packet_alloc(); //pPacket holds data buffer reference and more
-    // AVFrame *pFrame = av_frame_alloc();
     double TotalTime = 0;
     // SetTargetFPS(FPS);  // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
                         // it will also delay the sound frames.. making the video slow down
@@ -196,17 +197,18 @@ int main(void)
     {
         Vector2 mouse = GetMousePosition();  
         Controller();
-        if (FrameToDraw < FrameNextEntryToFill)
+        if (!stop)
         {
-            frame_work_queue_entry* FramePtr = FrameQueue + FrameToDraw;
-            FrameToDraw++;
-            pFrame = FramePtr->Frame;
+            if (FrameToDraw < FrameNextEntryToFill)
+            {
+                frame_work_queue_entry* FramePtr = FrameQueue + FrameToDraw;
+                FrameToDraw++;
+                pFrame = FramePtr->Frame;
 
-        }
-        else {printf("Render Too fast !!");}
+            }
+            else {printf("Render Too fast !!\n");}
 
-        if (pFrame)
-        {
+            //TODO Check if pFrame is valid
             sws_scale(sws_ctx, pFrame->data, pFrame->linesize, 0,
                         pFrame->height, pRGBFrame->data, pRGBFrame->linesize);
             UpdateTexture(texture, pRGBFrame->data[0]);
@@ -214,26 +216,20 @@ int main(void)
                 ClearBackground(RAYWHITE);
                 DrawTexturePro(texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
                         (Rectangle){0, 0, SCREEN_WIDTH, SCREEN_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
-                // DrawText(TextFormat("Time: %.2f / %.2f", curr_time, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
+                DrawText(TextFormat("Time: %.2f / %.2f", curr_time, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("FPS: %d / %d", GetFPS(), FPS), 0, 0, 20, WHITE);
                 DrawText(TextFormat("Time Ray: %lf",TotalTime), SCREEN_WIDTH-200, 20, 20, WHITE);
                 DrawText(TextFormat("TOTAL FRAMES: %lld",TotalFrames), SCREEN_WIDTH-215, 40, 20, WHITE);
                 DrawFPS(0,30);
-                TotalTime += GetFrameTime();
+                // TotalTime += GetFrameTime();
             EndDrawing();    
         }
-        // if (pPacket->stream_index == videoStreamIndex) // Necessary for SetTargetFPS
-        // {
-        //    //rendering stuff before
-        // }
-        // else{
-        //     Controller(); //There is some bug with raylib... if the loop goes
-        //     //without draw it will carry the pressed key to the next loop
-        // }
-        // av_packet_unref(pPacket);
     }
     // Cleanup resources
     // TODO -- STOP THREAD
+    DecodingThread = false;
+    pthread_join(threads[0], NULL);
+    printf("Decoding Thread Closed\n");
     CleanUp(&DecodingCtx,FrameQueue,ARRAY_COUNT(FrameQueue),pRGBFrame,sws_ctx,&texture);
     CloseWindow();                  // Close window and OpenGL context
     return 0;
