@@ -32,10 +32,10 @@ typedef int64_t s64;
 
 #define SCREEN_WIDTH 1000
 #define SCREEN_HEIGHT 600
-#define NUM_THREADS 8
+#define VIDEO_WIDTH 500
+#define VIDEO_HEIGHT 500
+#define NUM_THREADS 2
 
-
-bool stop = false; // Name pause is taken by unistd
 
 struct VideoDecodingCtx
 {
@@ -51,8 +51,28 @@ struct frame_work_queue_entry //We need to free this
     AVFrame *Frame = av_frame_alloc();
 };
 
+struct VideoState 
+{
+    AVFrame *currFrame;
+    u64 frameCount;
+    float currRealTime;
+    float currVideoTime;
+    float duration;
+    bool stop;
+    bool Incremental;
+    bool Decrement;
+};
 
-void CleanUp(VideoDecodingCtx *VideoDecodingCtx, frame_work_queue_entry FrameQueue[], u32 SizeOfQueue, AVFrame *pRGBFrame, struct SwsContext *swsContext, Texture2D *texture)
+Rectangle Faces[10];
+frame_work_queue_entry FrameQueue[1000];
+static u32 volatile FrameNextEntryToFill;
+static bool volatile DecodingThread = true;
+int currentGesture = GESTURE_NONE;
+int lastGesture = GESTURE_NONE;
+pthread_mutex_t writeMutex = PTHREAD_MUTEX_INITIALIZER; //Overkill ? 
+
+
+void CleanUpAll(VideoDecodingCtx *VideoDecodingCtx, frame_work_queue_entry FrameQueue[], u32 SizeOfQueue, AVFrame *pRGBFrame, struct SwsContext *swsContext, Texture2D *texture)
 {
 
     for (u32 i = 0; i < SizeOfQueue; i++)
@@ -66,28 +86,55 @@ void CleanUp(VideoDecodingCtx *VideoDecodingCtx, frame_work_queue_entry FrameQue
     av_packet_unref(VideoDecodingCtx->pPacket);
     av_packet_free(&VideoDecodingCtx->pPacket);
     avcodec_free_context(&VideoDecodingCtx->pVideoCodecCtx);
-
+    printf("Cleaned All...\n");
 }
 
+Vector2 dragVec;
 inline
-void Controller(void)
+void Controller(VideoState * videoState, Rectangle *face)
 {
     if (IsKeyPressed(KEY_SPACE))
     {
         // stop = (stop == 0)? 1 : 0;
-        stop = !stop;
-        printf("Pause: %i\n", stop);
+        videoState->stop = !videoState->stop;
+        printf("Pause: %i\n", videoState->stop);
+    }
+
+    if (IsKeyPressed(KEY_RIGHT))
+    {
+        if (!videoState->stop) videoState->stop = !videoState->stop;
+        videoState->Decrement = false;
+        videoState->Incremental = true;
+    }
+
+    if (IsKeyPressed(KEY_LEFT))
+    {
+        if (!videoState->stop) videoState->stop = !videoState->stop;
+        videoState->Incremental = false;
+        videoState->Decrement = true;
+    }
+
+    lastGesture = currentGesture;
+    currentGesture = GetGestureDetected();
+
+    if (currentGesture & (GESTURE_TAP | GESTURE_DOUBLETAP | GESTURE_HOLD))
+    {
+        face->x = GetMouseX();
+        face->y = GetMouseY();
+        face->width = 0;
+        face->height = 0;
+    }
+    //TODO - FIX MOUSE OFFSET AT DRAGGING when moving fast
+    if (currentGesture == GESTURE_DRAG)
+    {   
+        face->width = GetMouseX() - face->x ;
+        face->height = GetMouseY() - face->y;
     }
 }
-
-frame_work_queue_entry FrameQueue[1000];
-static u32 volatile FrameNextEntryToFill;
-static bool volatile DecodingThread = true;
 
 void* DoDecoding(void* arg)
 {      
     VideoDecodingCtx *DecodingCtx = (VideoDecodingCtx *)arg;
-    AVFrame* Frame;
 
     while (DecodingThread)
     {
@@ -97,18 +144,32 @@ void* DoDecoding(void* arg)
         {   
                 assert(FrameNextEntryToFill < ARRAY_COUNT(FrameQueue));
                 frame_work_queue_entry* pFrame = FrameQueue + FrameNextEntryToFill;
-                FrameNextEntryToFill++;
-                Frame = pFrame->Frame;
+                
+                __sync_add_and_fetch(&FrameNextEntryToFill, 1);
 
                 avcodec_send_packet(DecodingCtx->pVideoCodecCtx, DecodingCtx->pPacket);
                 av_packet_unref(DecodingCtx->pPacket);
-                avcodec_receive_frame(DecodingCtx->pVideoCodecCtx, Frame);
+                avcodec_receive_frame(DecodingCtx->pVideoCodecCtx, pFrame->Frame);
 
         }
     }
-
     pthread_exit(NULL);
 }
+
+void Slider(VideoState *VideoState)
+{
+    int heigth = 100;
+    int lenght = 500;
+    float posSlider = VideoState->currVideoTime*((float)lenght/VideoState->duration);
+    DrawRectangle(0,(int)(SCREEN_HEIGHT - heigth),lenght, heigth, CLITERAL(Color){ 64, 64, 64, 50});
+    DrawLineEx((Vector2){posSlider,(float)SCREEN_HEIGHT},(Vector2){posSlider,(float)(SCREEN_HEIGHT - heigth)},2,RED);
+}
+
+// void PlayButton(VideoState *VideoState)
+// {
+//     DrawTriangle()
+
+// }
 
 // Function to clamp a value between a minimum and maximum
 int main(void)
@@ -153,13 +214,6 @@ int main(void)
     DecodingCtx.videoStreamIndex = videoStreamIndex;
     DecodingCtx.pPacket = av_packet_alloc();
 
-    pthread_t threads[NUM_THREADS];
-    if (pthread_create(&threads[0], NULL, DoDecoding, &DecodingCtx) != 0)
-    {
-        perror("pthread_create");
-        return 1;
-    }
-
     u32 VideoWidth = pVideoCodecCtx->width;
     u32 VideoHeight = pVideoCodecCtx->height;
 
@@ -182,46 +236,75 @@ int main(void)
     texture.mipmaps = 1;
     texture.id = rlLoadTexture(NULL, texture.width, texture.height, texture.format, texture.mipmaps);
 
+    pthread_t threads[NUM_THREADS];
+    if (pthread_create(&threads[0], NULL, DoDecoding, &DecodingCtx) != 0)
+    {
+        perror("pthread_create");
+        return 1;
+    }
+
     u32 FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
     double curr_time = 0;
     double time_base = av_q2d(VideoStream->time_base);
-    double duration = (double)VideoStream->duration*time_base;
+    float duration = VideoStream->duration*time_base;
 
-    double TotalTime = 0;
-    // SetTargetFPS(FPS);  // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
+    VideoState videoState = {0};
+    videoState.duration = duration;
+
+    SetTargetFPS(FPS);   // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
                         // it will also delay the sound frames.. making the video slow down
-    u64 TotalFrames = 0;        
-    u32 FrameToDraw = 0;
-    AVFrame *pFrame = av_frame_alloc();
+
+    Rectangle face = {0,0,0,0};
+    Vector2 dragVec;
+    // printf("Drag: %f,%f", dragVec.x,dragVec.y);
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         Vector2 mouse = GetMousePosition();  
-        Controller();
-        if (!stop)
-        {
-            if (FrameToDraw < FrameNextEntryToFill)
-            {
-                frame_work_queue_entry* FramePtr = FrameQueue + FrameToDraw;
-                FrameToDraw++;
-                pFrame = FramePtr->Frame;
+        Controller(&videoState, &face);
 
+        if (!videoState.stop || videoState.Incremental)
+        {   
+            printf("Frame Count: %llu FrameNextEntry: %u\n", videoState.frameCount,FrameNextEntryToFill);
+            fflush(stdout);
+            // TODO understand the error if we take -1 out
+            if (videoState.frameCount < FrameNextEntryToFill - 1) //If frameCount too close to NextEntry it fails.. idk why for now
+            {   
+                frame_work_queue_entry* FramePtr = FrameQueue + videoState.frameCount;
+                videoState.currFrame  = FramePtr->Frame;
+                videoState.frameCount++;
+                videoState.Incremental = false;
+                videoState.currVideoTime = (double)FramePtr->Frame->pts*time_base;
             }
-            else {printf("Render Too fast !!\n");}
+            else
+            {
+            printf("Too Fast Render\n");
+            }
 
+        }
+       
+        // This whole thing breaks when we let the FPS go high
+        if (videoState.frameCount > 0)
+        {
             //TODO Check if pFrame is valid
-            sws_scale(sws_ctx, pFrame->data, pFrame->linesize, 0,
-                        pFrame->height, pRGBFrame->data, pRGBFrame->linesize);
+            // printf("img ptr %p\n", videoState.currFrame->data);
+            sws_scale(sws_ctx, videoState.currFrame->data, videoState.currFrame->linesize, 0,
+                        videoState.currFrame->height, pRGBFrame->data, pRGBFrame->linesize);
             UpdateTexture(texture, pRGBFrame->data[0]);
+                videoState.currRealTime += GetFrameTime();
             BeginDrawing(); 
-                ClearBackground(RAYWHITE);
+                ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
+
                 DrawTexturePro(texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
-                        (Rectangle){0, 0, SCREEN_WIDTH, SCREEN_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
-                DrawText(TextFormat("Time: %.2f / %.2f", curr_time, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
+                        (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
+                DrawRectangleRoundedLines(face, 2, 2, 2, RED);
+                Slider(&videoState);
+
+                DrawText(TextFormat("Time: %.2lf / %.2f", videoState.currVideoTime, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
+                DrawText(TextFormat("Real Time: %.2f", videoState.currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
                 DrawText(TextFormat("FPS: %d / %d", GetFPS(), FPS), 0, 0, 20, WHITE);
-                DrawText(TextFormat("Time Ray: %lf",TotalTime), SCREEN_WIDTH-200, 20, 20, WHITE);
-                DrawText(TextFormat("TOTAL FRAMES: %lld",TotalFrames), SCREEN_WIDTH-215, 40, 20, WHITE);
+                DrawText(TextFormat("TOTAL FRAMES: %lld",videoState.frameCount), SCREEN_WIDTH-215, 40, 20, WHITE);
+                DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
                 DrawFPS(0,30);
-                // TotalTime += GetFrameTime();
             EndDrawing();    
         }
     }
@@ -230,7 +313,7 @@ int main(void)
     DecodingThread = false;
     pthread_join(threads[0], NULL);
     printf("Decoding Thread Closed\n");
-    CleanUp(&DecodingCtx,FrameQueue,ARRAY_COUNT(FrameQueue),pRGBFrame,sws_ctx,&texture);
+    CleanUpAll(&DecodingCtx,FrameQueue,ARRAY_COUNT(FrameQueue),pRGBFrame,sws_ctx,&texture);
     CloseWindow();                  // Close window and OpenGL context
     return 0;
 }
