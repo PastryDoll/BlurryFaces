@@ -57,6 +57,7 @@ struct VideoState
     u64 frameCount;
     float currRealTime;
     float currVideoTime;
+    float currFrameTime;
     float duration;
     bool stop;
     bool Incremental;
@@ -171,7 +172,6 @@ void Slider(VideoState *VideoState)
 
 // }
 
-// Function to clamp a value between a minimum and maximum
 int main(void)
 {
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "BlurryFaces");
@@ -251,34 +251,51 @@ int main(void)
     VideoState videoState = {0};
     videoState.duration = duration;
 
-    SetTargetFPS(FPS);   // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
-                        // it will also delay the sound frames.. making the video slow down
+    // We want the application to run freely but the video to run at its FPS... Thats why we use videoState.currFrameTime
+    // Maybe ideally we need second thread to render the video.. but I dont belive this is possible with RayLib
+    // SetTargetFPS(FPS);   // So this uses BeginDrawing block... if that is outside the videoStreamIndex 
+                            // it will also delay the sound frames.. making the video slow down
 
     Rectangle face = {0,0,0,0};
     Vector2 dragVec;
+    float TimePerFrame = 1/(float)FPS;
     // printf("Drag: %f,%f", dragVec.x,dragVec.y);
     while (!WindowShouldClose())    // Detect window close button or ESC key
-    {
+    {   
         Vector2 mouse = GetMousePosition();  
         Controller(&videoState, &face);
-
-        if (!videoState.stop || videoState.Incremental)
+        videoState.currRealTime += GetFrameTime();
+        videoState.currFrameTime += GetFrameTime(); 
+        printf("Current Frame Time: %f\n", videoState.currFrameTime);
+        if (videoState.currFrameTime >= TimePerFrame || videoState.frameCount == 0)
         {   
-            printf("Frame Count: %llu FrameNextEntry: %u\n", videoState.frameCount,FrameNextEntryToFill);
-            fflush(stdout);
-            // TODO understand the error if we take -1 out
-            if (videoState.frameCount < FrameNextEntryToFill - 1) //If frameCount too close to NextEntry it fails.. idk why for now
+            if (!videoState.stop || videoState.Incremental)
             {   
-                frame_work_queue_entry* FramePtr = FrameQueue + videoState.frameCount;
-                videoState.currFrame  = FramePtr->Frame;
-                videoState.frameCount++;
-                videoState.Incremental = false;
-                videoState.currVideoTime = (double)FramePtr->Frame->pts*time_base;
+                videoState.currFrameTime = 0;
+                printf("Frame Count: %llu FrameNextEntry: %u\n", videoState.frameCount,FrameNextEntryToFill);
+                fflush(stdout);
+                // TODO understand the error if we take -1 out
+                if (videoState.frameCount < FrameNextEntryToFill - 1) //If frameCount too close to NextEntry it fails.. idk why for now
+                {   
+                    frame_work_queue_entry* FramePtr = FrameQueue + videoState.frameCount;
+                    videoState.currFrame  = FramePtr->Frame;
+                    videoState.frameCount++;
+                    videoState.Incremental = false;
+                    videoState.currVideoTime = (double)FramePtr->Frame->pts*time_base;
+                    
+                    // PLEASE UNDERSAND THIS !!!!!!!!!
+                    // It doest make sense.. if we put this outside the if (stop) when we pause the FPS goes down
+                    sws_scale(sws_ctx, videoState.currFrame->data, videoState.currFrame->linesize, 0,
+                                videoState.currFrame->height, pRGBFrame->data, pRGBFrame->linesize);
+                    UpdateTexture(texture, pRGBFrame->data[0]);
+                }
+                else
+                {
+                printf("Too Fast Render\n");
+                }
+
             }
-            else
-            {
-            printf("Too Fast Render\n");
-            }
+            
 
         }
        
@@ -287,18 +304,12 @@ int main(void)
         {
             //TODO Check if pFrame is valid
             // printf("img ptr %p\n", videoState.currFrame->data);
-            sws_scale(sws_ctx, videoState.currFrame->data, videoState.currFrame->linesize, 0,
-                        videoState.currFrame->height, pRGBFrame->data, pRGBFrame->linesize);
-            UpdateTexture(texture, pRGBFrame->data[0]);
-                videoState.currRealTime += GetFrameTime();
             BeginDrawing(); 
                 ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
-
                 DrawTexturePro(texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
                         (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
                 DrawRectangleRoundedLines(face, 2, 2, 2, RED);
                 Slider(&videoState);
-
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState.currVideoTime, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState.currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
                 DrawText(TextFormat("FPS: %d / %d", GetFPS(), FPS), 0, 0, 20, WHITE);
