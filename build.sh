@@ -2,4 +2,15 @@
 
 set -xe
 
-clang++ -g -std=c++11 -O0 -Wall -framework CoreVideo -framework IOKit -framework Cocoa -framework GLUT -framework OpenGL ../raylibtest/lib/libraylib.a main.cpp -o BlurryFaces -I../raylibtest/lib -I/opt/homebrew/include -lavformat -lavcodec -lavutil -lswscale -L/opt/homebrew/lib
+FLAGS="-g -std=c++11 -O3 -Wall"
+
+FRAMEWORKS="-framework CoreVideo -framework IOKit -framework Cocoa 
+-framework GLUT -framework OpenGL"
+
+LIBS="-lavformat -lavcodec -lavutil -lswscale ../raylibtest/lib/libraylib.a"
+
+LIBS_PATHS="-L/opt/homebrew/lib"
+
+INCLUDE_PATHS="-I../raylibtest/lib -I/opt/homebrew/include -I/opt/homebrew/include/opencv4"
+
+clang++ $FLAGS $FRAMEWORKS main.cpp -o BlurryFaces $INCLUDE_PATHS $LIBS $LIBS_PATHS

@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <pthread.h>
-
+#include <opencv2/opencv.hpp>
 
 extern "C" {
     #include <libavcodec/avcodec.h>
@@ -70,8 +70,7 @@ static u32 volatile FrameNextEntryToFill;
 static bool volatile DecodingThread = true;
 int currentGesture = GESTURE_NONE;
 int lastGesture = GESTURE_NONE;
-pthread_mutex_t writeMutex = PTHREAD_MUTEX_INITIALIZER; //Overkill ? 
-
+// pthread_mutex_t writeMutex = PTHREAD_MUTEX_INITIALIZER; //Overkill ? 
 
 void CleanUpAll(VideoDecodingCtx *VideoDecodingCtx, frame_work_queue_entry FrameQueue[], u32 SizeOfQueue, AVFrame *pRGBFrame, struct SwsContext *swsContext, Texture2D *texture)
 {
@@ -264,8 +263,9 @@ int main(void)
     {   
         Vector2 mouse = GetMousePosition();  
         Controller(&videoState, &face);
-        videoState.currRealTime += GetFrameTime();
-        videoState.currFrameTime += GetFrameTime(); 
+        float currTime = GetFrameTime();
+        videoState.currRealTime += currTime;
+        videoState.currFrameTime += currTime; 
         printf("Current Frame Time: %f\n", videoState.currFrameTime);
         if (videoState.currFrameTime >= TimePerFrame || videoState.frameCount == 0)
         {   
@@ -282,9 +282,10 @@ int main(void)
                     videoState.frameCount++;
                     videoState.Incremental = false;
                     videoState.currVideoTime = (double)FramePtr->Frame->pts*time_base;
-                    
-                    // PLEASE UNDERSAND THIS !!!!!!!!!
+
+                    // PLEASE UNDERSTAND THIS !!!!!!!!!
                     // It doest make sense.. if we put this outside the if (stop) when we pause the FPS goes down
+                    // TODO maybe make this in another thread
                     sws_scale(sws_ctx, videoState.currFrame->data, videoState.currFrame->linesize, 0,
                                 videoState.currFrame->height, pRGBFrame->data, pRGBFrame->linesize);
                     UpdateTexture(texture, pRGBFrame->data[0]);
@@ -295,8 +296,6 @@ int main(void)
                 }
 
             }
-            
-
         }
        
         // This whole thing breaks when we let the FPS go high
@@ -312,7 +311,7 @@ int main(void)
                 Slider(&videoState);
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState.currVideoTime, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState.currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
-                DrawText(TextFormat("FPS: %d / %d", GetFPS(), FPS), 0, 0, 20, WHITE);
+                DrawText(TextFormat("FPS: %lf / %d", videoState.frameCount/videoState.currVideoTime, FPS), 0, 0, 20, WHITE);
                 DrawText(TextFormat("TOTAL FRAMES: %lld",videoState.frameCount), SCREEN_WIDTH-215, 40, 20, WHITE);
                 DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
                 DrawFPS(0,30);
