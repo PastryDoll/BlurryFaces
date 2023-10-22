@@ -235,6 +235,12 @@ int main(void)
     texture.mipmaps = 1;
     texture.id = rlLoadTexture(NULL, texture.width, texture.height, texture.format, texture.mipmaps);
 
+    Image image = {0};
+    image.height = VideoHeight;
+    image.width = VideoWidth;
+    image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
+    image.mipmaps = 1;
+
     pthread_t threads[NUM_THREADS];
     if (pthread_create(&threads[0], NULL, DoDecoding, &DecodingCtx) != 0)
     {
@@ -243,7 +249,6 @@ int main(void)
     }
 
     u32 FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
-    double curr_time = 0;
     double time_base = av_q2d(VideoStream->time_base);
     float duration = VideoStream->duration*time_base;
 
@@ -261,7 +266,6 @@ int main(void)
     // printf("Drag: %f,%f", dragVec.x,dragVec.y);
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
-        Vector2 mouse = GetMousePosition();  
         Controller(&videoState, &face);
         float currTime = GetFrameTime();
         videoState.currRealTime += currTime;
@@ -288,7 +292,23 @@ int main(void)
                     // TODO maybe make this in another thread
                     sws_scale(sws_ctx, videoState.currFrame->data, videoState.currFrame->linesize, 0,
                                 videoState.currFrame->height, pRGBFrame->data, pRGBFrame->linesize);
-                    UpdateTexture(texture, pRGBFrame->data[0]);
+                    
+                    // Create a temporary image and copy the specific region into it
+                    image.data = pRGBFrame->data[0];
+
+                    // Invert the color of the temporary image
+
+                    // Copy the modified region from the temporary image back to the original image
+                    if (face.width > 10 && face.height > 10)
+                    {
+                        printf("x,y: %f,%f\n", face.x-500,face.y);
+                        Image tempImage = ImageFromImage(image, (Rectangle){face.x - 500, face.y, face.width, face.height});
+                        ImageColorInvert(&tempImage);
+                        ImageDraw(&image, tempImage, (Rectangle){0, 0, face.width, face.height},(Rectangle){face.x , face.y, (float)texture.width, (float)texture.height}, WHITE);
+                    }
+                    // printf("Video H,W: %d,%d\n", VideoWidth, image.width);
+                    // ImageColorInvert(&image);  
+                    UpdateTexture(texture, image.data);
                 }
                 else
                 {
