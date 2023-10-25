@@ -43,6 +43,7 @@ struct VideoDecodingCtx
     s32 videoStreamIndex;
     AVCodecContext *pVideoCodecCtx;
     AVPacket *pPacket;
+    u64 *frameCount;
 
 };
 
@@ -65,7 +66,8 @@ struct VideoState
 };
 
 Rectangle Faces[10];
-frame_work_queue_entry FrameQueue[1000];
+const int gap = 10;
+frame_work_queue_entry FrameQueue[gap];
 static u32 volatile FrameNextEntryToFill;
 static bool volatile DecodingThread = true;
 int currentGesture = GESTURE_NONE;
@@ -135,22 +137,29 @@ void Controller(VideoState * videoState, Rectangle *face)
 void* DoDecoding(void* arg)
 {      
     VideoDecodingCtx *DecodingCtx = (VideoDecodingCtx *)arg;
-
+    // int counter = 0; 
     while (DecodingThread)
     {
-        if (av_read_frame(DecodingCtx->pFormatContext, DecodingCtx->pPacket) < 0){break;}
+        if (FrameNextEntryToFill - *DecodingCtx->frameCount < gap)
+        {
+            if (av_read_frame(DecodingCtx->pFormatContext, DecodingCtx->pPacket) < 0){break;}
+            // counter++;
 
-        if (DecodingCtx->pPacket->stream_index == DecodingCtx->videoStreamIndex) 
-        {   
-                assert(FrameNextEntryToFill < ARRAY_COUNT(FrameQueue));
-                frame_work_queue_entry* pFrame = FrameQueue + FrameNextEntryToFill;
-                
-                __sync_add_and_fetch(&FrameNextEntryToFill, 1);
+            if (DecodingCtx->pPacket->stream_index == DecodingCtx->videoStreamIndex) 
+            {   
+                    // assert((unsigned char)FrameNextEntryToFill < ARRAY_COUNT(FrameQueue));
+                    frame_work_queue_entry* pFrame = FrameQueue + FrameNextEntryToFill%gap;
+                    
+                    __sync_add_and_fetch(&FrameNextEntryToFill, 1);
+                    // if (counter == 100)
+                    // {
 
-                avcodec_send_packet(DecodingCtx->pVideoCodecCtx, DecodingCtx->pPacket);
-                av_packet_unref(DecodingCtx->pPacket);
-                avcodec_receive_frame(DecodingCtx->pVideoCodecCtx, pFrame->Frame);
+                    // }
+                    avcodec_send_packet(DecodingCtx->pVideoCodecCtx, DecodingCtx->pPacket);
+                    avcodec_receive_frame(DecodingCtx->pVideoCodecCtx, pFrame->Frame);
+                    av_packet_unref(DecodingCtx->pPacket);
 
+            }
         }
     }
     pthread_exit(NULL);
@@ -207,12 +216,26 @@ int main(void)
     avcodec_parameters_to_context(pVideoCodecCtx, pVideoCodecParams);
     avcodec_open2(pVideoCodecCtx, pVideoCodec, NULL);
 
+    u32 FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
+    double time_base = av_q2d(VideoStream->time_base);
+    float duration = VideoStream->duration*time_base;
+
+    VideoState videoState = {0};
+    videoState.duration = duration;
+    
     struct VideoDecodingCtx DecodingCtx;
     DecodingCtx.pFormatContext = pFormatContext;
     DecodingCtx.pVideoCodecCtx = pVideoCodecCtx;
     DecodingCtx.videoStreamIndex = videoStreamIndex;
     DecodingCtx.pPacket = av_packet_alloc();
+    DecodingCtx.frameCount = &videoState.frameCount;
 
+    pthread_t threads[NUM_THREADS];
+    if (pthread_create(&threads[0], NULL, DoDecoding, &DecodingCtx) != 0)
+    {
+        perror("pthread_create");
+        return 1;
+    }
     u32 VideoWidth = pVideoCodecCtx->width;
     u32 VideoHeight = pVideoCodecCtx->height;
 
@@ -241,19 +264,7 @@ int main(void)
     image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
     image.mipmaps = 1;
 
-    pthread_t threads[NUM_THREADS];
-    if (pthread_create(&threads[0], NULL, DoDecoding, &DecodingCtx) != 0)
-    {
-        perror("pthread_create");
-        return 1;
-    }
 
-    u32 FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
-    double time_base = av_q2d(VideoStream->time_base);
-    float duration = VideoStream->duration*time_base;
-
-    VideoState videoState = {0};
-    videoState.duration = duration;
 
     // We want the application to run freely but the video to run at its FPS... Thats why we use videoState.currFrameTime
     // Maybe ideally we need second thread to render the video.. but I dont belive this is possible with RayLib
@@ -262,7 +273,7 @@ int main(void)
 
     Rectangle face = {0,0,0,0};
     Vector2 dragVec;
-    float TimePerFrame = 1/(float)FPS;
+    float TimePerFrame = 1/(float)FPS/4;
     // printf("Drag: %f,%f", dragVec.x,dragVec.y);
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
@@ -270,7 +281,7 @@ int main(void)
         float currTime = GetFrameTime();
         videoState.currRealTime += currTime;
         videoState.currFrameTime += currTime; 
-        printf("Current Frame Time: %f\n", videoState.currFrameTime);
+        // printf("Current Frame Time: %f\n", videoState.currFrameTime);
         if (videoState.currFrameTime >= TimePerFrame || videoState.frameCount == 0)
         {   
             if (!videoState.stop || videoState.Incremental)
@@ -281,9 +292,10 @@ int main(void)
                 // TODO understand the error if we take -1 out
                 if (videoState.frameCount < FrameNextEntryToFill - 1) //If frameCount too close to NextEntry it fails.. idk why for now
                 {   
-                    frame_work_queue_entry* FramePtr = FrameQueue + videoState.frameCount;
+                    frame_work_queue_entry* FramePtr = FrameQueue + videoState.frameCount%gap;
                     videoState.currFrame  = FramePtr->Frame;
-                    videoState.frameCount++;
+                    __sync_add_and_fetch(&videoState.frameCount, 1);
+                    // videoState.frameCount++;
                     videoState.Incremental = false;
                     videoState.currVideoTime = (double)FramePtr->Frame->pts*time_base;
 
@@ -331,10 +343,11 @@ int main(void)
                 Slider(&videoState);
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState.currVideoTime, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState.currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
-                DrawText(TextFormat("FPS: %lf / %d", videoState.frameCount/videoState.currVideoTime, FPS), 0, 0, 20, WHITE);
+                DrawText(TextFormat("Real FPS: %lf / %d", videoState.frameCount/videoState.currVideoTime, FPS), 0, 0, 20, WHITE);
+                DrawText(TextFormat("Max Curr FPS: %lf / %d", 1/TimePerFrame, FPS), 0, 20, 20, WHITE);
                 DrawText(TextFormat("TOTAL FRAMES: %lld",videoState.frameCount), SCREEN_WIDTH-215, 40, 20, WHITE);
                 DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
-                DrawFPS(0,30);
+                DrawFPS(0,40);
             EndDrawing();    
         }
     }
