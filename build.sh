@@ -2,7 +2,7 @@
 
 # set -xe
 
-FLAGS="-g -std=c++11 -O3 -Wall"
+FLAGS="-g -std=c++11 -O3 -Wall -Wno-deprecated-declarations -Wno-unused-but-set-variable"
 
 FRAMEWORKS="-framework CoreVideo -framework IOKit -framework Cocoa 
 -framework GLUT -framework OpenGL"
