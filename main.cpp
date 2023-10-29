@@ -466,7 +466,7 @@ int main(void)
 
         if (UIstate)
         {
-            // Controller(videoState, &videoState->face);
+            Controller(videoState, &videoState->face);
             float currTime = GetFrameTime();
             videoState->currFrameTime += currTime; 
             videoState->currRealTime += currTime;
