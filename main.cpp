@@ -81,32 +81,39 @@ struct texture_work_queue_entry //We need to free this
 struct VideoState 
 {
     struct SwsContext *sws_ctx;
-    AVFrame *currFrame;
+
     Image image;
     Image tempImage;
+    Texture texture;
+
     Rectangle face;
+    
     AVFrame *pRGBFrameTemp;
     AVFrame *pRGBFrame;
-    Texture texture;
+    
+
+    s32 videoStreamIndex;
+    AVFormatContext *pFormatContext;
+    AVCodecContext *pVideoCodecCtx;
+    AVPacket *pPacket;
+
     float TimePerFrame;
     u64 volatile frameCountDraw;
     u64 volatile frameCountShow;
     u64 volatile blah;
     u32 height;
     u32 width;
+
     float currRealTime;
     float currVideoTime;
     float currFrameTime;
+
     float duration;
     bool stop;
     bool Incremental;
     bool Decrement;
     double timebase;
-
-    AVFormatContext *pFormatContext;
-    s32 videoStreamIndex;
-    AVCodecContext *pVideoCodecCtx;
-    AVPacket *pPacket;
+    u32 FPS;
 
 };
 
@@ -152,7 +159,6 @@ void* DoDecoding(void* arg)
 void* UpdateFrame(void* arg)
 {
     VideoState *videoState = (VideoState *)arg;
-    // pthread_t thread_id = pthread_self(); // Get the thread ID
 
     while (DecodingThread)
     {
@@ -170,7 +176,6 @@ void* UpdateFrame(void* arg)
                 if (InitialValue == OriginalFrameCount) //If the original is what we thought it should be
                 {
                     frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountDraw-1)%gap;
-                    // videoState->currVideoTime = 0; //(double)FramePtr->Frame->pts*time_base; //TODO this will not work with more than one thread
                     sws_scale(videoState->sws_ctx, FramePtr->Frame->data, FramePtr->Frame->linesize, 0,
                                 FramePtr->Frame->height, FramePtr->pRGBFrame->data, FramePtr->pRGBFrame->linesize);
                     __sync_add_and_fetch(&videoState->blah,1);
@@ -217,6 +222,22 @@ void CleanUpAll(VideoDecodingCtx *VideoDecodingCtx, frame_work_queue_entry Frame
     av_packet_free(&VideoDecodingCtx->pPacket);
     avcodec_free_context(&VideoDecodingCtx->pVideoCodecCtx);
     printf("Cleaned All...\n");
+}
+
+void CleanUpVideo(VideoState *VideoState)
+{
+    sws_freeContext(VideoState->sws_ctx);
+    UnloadImage(VideoState->image);
+    UnloadImage(VideoState->tempImage);
+    UnloadTexture(VideoState->texture);
+
+    av_frame_free(&VideoState->pRGBFrame);
+    av_frame_free(&VideoState->pRGBFrameTemp);
+
+    avformat_close_input(&VideoState->pFormatContext);
+    av_packet_unref(VideoState->pPacket);
+    av_packet_free(&VideoState->pPacket);
+    avcodec_free_context(&VideoState->pVideoCodecCtx);
 }
 
 Vector2 dragVec;
@@ -400,15 +421,9 @@ VideoState *InitializeVideo(const char *path)
     videoState->pVideoCodecCtx = pVideoCodecCtx;
     videoState->videoStreamIndex = videoStreamIndex;
     videoState->pPacket = av_packet_alloc();
+    videoState->duration = duration;
+    videoState->FPS = FPS;
     // videoState->threads = threads;
-
-    // struct VideoDecodingCtx DecodingCtx;
-    // DecodingCtx.pFormatContext = pFormatContext;
-    // DecodingCtx.pVideoCodecCtx = pVideoCodecCtx;
-    // DecodingCtx.videoStreamIndex = videoStreamIndex;
-    // DecodingCtx.pPacket = av_packet_alloc();
-    // DecodingCtx.frameCountDraw = videoState.frameCountDraw;
-    // DecodingCtx.stop = videoState.stop;
 
     if (pthread_create(&threads[0], NULL, DoDecoding, videoState) != 0)
     {
@@ -424,71 +439,87 @@ VideoState *InitializeVideo(const char *path)
 }
 
 int main(void)
-{
+{   
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "BlurryFaces");
+
     GuiWindowFileDialogState fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
-    const char *path = "84.mp4";
-    VideoState *videoState = InitializeVideo(path);
+    char fileNameToLoad[512] = {0};
+    VideoState *videoState;
+    UIState UIstate = NOVIDEO; 
     
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
-        Controller(videoState, &videoState->face);
-        float currTime = GetFrameTime();
-        videoState->currFrameTime += currTime; 
-        // total += currTime;
-        // printf("now: %f, %f\n", videoState.currFrameTime,TimePerFrame);
-        if (videoState->currFrameTime >= videoState->TimePerFrame || videoState->frameCountDraw == 0)
-        {   
-            videoState->currFrameTime = 0;
-            videoState->pRGBFrameTemp = GetFrame(videoState);
-            
-            if (videoState->pRGBFrameTemp)
+        if (fileDialogState.SelectFilePressed)
+        {
+            if(UIstate) CleanUpVideo(videoState);
+            if (IsFileExtension(fileDialogState.fileNameText, ".mp4") ||
+                IsFileExtension(fileDialogState.fileNameText, ".mov"))
             {
+                strcpy(fileNameToLoad, TextFormat("%s" PATH_SEPERATOR "%s", fileDialogState.dirPathText, fileDialogState.fileNameText));
+                videoState = InitializeVideo(fileNameToLoad);
+                printf("%s %s\n",fileDialogState.dirPathText,fileDialogState.fileNameText);
+                UIstate = VIDEOSELECTED;
+                fileDialogState.SelectFilePressed = false;
+            }
+        }
+
+        if (UIstate)
+        {
+            // Controller(videoState, &videoState->face);
+            float currTime = GetFrameTime();
+            videoState->currFrameTime += currTime; 
+            videoState->currRealTime += currTime;
+            if (videoState->currFrameTime >= videoState->TimePerFrame || videoState->frameCountDraw == 0)
+            {   
                 videoState->currFrameTime = 0;
-                // printf("now: %f, %f\n", videoState->currFrameTime,videoState->TimePerFrame);
-                if (videoState->face.width > 0 && videoState->face.height > 0)
+                videoState->pRGBFrameTemp = GetFrame(videoState);
+                
+                if (videoState->pRGBFrameTemp)
                 {
-                    if (videoState->stop)
+                    videoState->currFrameTime = 0;
+                    if (videoState->face.width > 0 && videoState->face.height > 0)
                     {
-                        av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
-                        videoState->image.data = videoState->pRGBFrame->data[0];
+                        if (videoState->stop)
+                        {
+                            av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
+                            videoState->image.data = videoState->pRGBFrame->data[0];
+                        }
+                        else videoState->image.data = videoState->pRGBFrameTemp->data[0];
+                        float x = ((videoState->face.x - 500)/500)*1080;
+                        float y = (videoState->face.y/500)*720;
+                        float w = (videoState->face.width/500)*1080;
+                        float h = (videoState->face.height/500)*720;
+                        videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
+                        ImageBlurGaussian(&videoState->tempImage,15);
+                        ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
+                        UpdateTexture(videoState->texture,videoState->image.data);
                     }
-                    else videoState->image.data = videoState->pRGBFrameTemp->data[0];
-                    float x = ((videoState->face.x - 500)/500)*1080;
-                    float y = (videoState->face.y/500)*720;
-                    float w = (videoState->face.width/500)*1080;
-                    float h = (videoState->face.height/500)*720;
-                    videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
-                    ImageBlurGaussian(&videoState->tempImage,15);
-                    ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
-                    UpdateTexture(videoState->texture,videoState->image.data);
-                    // frame_count++;
-                }
-                else
-                {
-                UpdateTexture(videoState->texture,videoState->pRGBFrameTemp->data[0]);
-                // frame_count++;
-                }
-            } 
+                    else
+                    {
+                    UpdateTexture(videoState->texture,videoState->pRGBFrameTemp->data[0]);
+                    }
+                } 
+            }
         }
         if (videoState->frameCountDraw > 0)
         {
             BeginDrawing(); 
                 ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
-
-                DrawTexturePro(videoState->texture, (Rectangle){0, 0, (float)videoState->texture.width, (float)videoState->texture.height},
-                        (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
-                // DrawTexturePro(text, (Rectangle){0, 0, (float)tempImage.width, (float)tempImage.height},
-                        // (Rectangle){0, 100, 100, 100}, (Vector2){0, 0}, 0, WHITE);
-                // DrawTexture(text,0,0,WHITE);
-                DrawRectangleRoundedLines(videoState->face, 2, 2, 2, RED);
-                Slider(videoState);
-                // DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
-                DrawText(TextFormat("Real Time: %.2f", videoState->currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
-                // DrawText(TextFormat("Real FPS: %lf / %d", frame_count/total, FPS), 0, 0, 20, WHITE);
-                // DrawText(TextFormat("Max Curr FPS: %lf / %d", 1/videoState->TimePerFrame, FPS), 0, 20, 20, WHITE);
-                DrawText(TextFormat("TOTAL FRAMES: %lld",videoState->frameCountDraw), SCREEN_WIDTH-215, 40, 20, WHITE);
-                DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
+                if (UIstate)
+                {
+                    DrawTexturePro(videoState->texture, (Rectangle){0, 0, (float)videoState->texture.width, (float)videoState->texture.height},
+                            (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
+                    DrawRectangleRoundedLines(videoState->face, 2, 2, 2, RED);
+                    Slider(videoState);
+                    DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, videoState->duration), SCREEN_WIDTH-200, 0, 20, WHITE);
+                    DrawText(TextFormat("Real Time: %.2f", videoState->currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
+                    //This Is causing segfault even bf loading video.. weird!!!!
+                    // DrawText(TextFormat("Real FPS: %f / %d", (float)videoState->frameCountShow/videoState->currRealTime, videoState->FPS), 0, 0, 20, WHITE);
+                    DrawText(TextFormat("Max Curr FPS: %lf / %d", 1/videoState->TimePerFrame, videoState->FPS), 0, 20, 20, WHITE);
+                    DrawText(TextFormat("TOTAL FRAMES: %lld",videoState->frameCountDraw), SCREEN_WIDTH-215, 40, 20, WHITE);
+                    DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
+                }
                 DrawFPS(0,40);
                 if (fileDialogState.windowActive) GuiLock();
 
@@ -500,7 +531,6 @@ int main(void)
                 GuiWindowFileDialog(&fileDialogState);
                 //--------------------------------------------------------------------------------
             EndDrawing();   
-            // UnloadTexture(text);
         }
     }
     // Cleanup resources
