@@ -36,7 +36,7 @@ typedef int64_t s64;
 #define SCREEN_HEIGHT 600
 #define VIDEO_WIDTH 500
 #define VIDEO_HEIGHT 500
-#define NUM_THREADS 2
+#define NUM_THREADS 3
 
 
 struct VideoDecodingCtx
@@ -47,7 +47,6 @@ struct VideoDecodingCtx
     AVPacket *pPacket;
     struct SwsContext *sws_ctx;
     u64 volatile *frameCountDraw;
-    bool *stop;
 
 };
 
@@ -80,41 +79,41 @@ struct VideoState
     bool stop;
     bool Incremental;
     bool Decrement;
-    double timebase;
 };
 
 Rectangle Faces[10];
 // A very poor and maybe bad idea of circular buffering for 
 // saving memory and maybe some hot memory use
-const int gap = 16;
+const int gap = 10;
 frame_work_queue_entry FrameQueue[gap];
 texture_work_queue_entry TextureQueue[gap];
 static u32 volatile FrameNextEntryToFill = 0;
+// static u32 volatile TextureNextEntryToFill;
 static bool volatile DecodingThread = true;
 int currentGesture = GESTURE_NONE;
 int lastGesture = GESTURE_NONE;
+// pthread_mutex_t writeMutex = PTHREAD_MUTEX_INITIALIZER; //Overkill ? 
 
-
-//TODO WE NEED TO UNDERSTAND HOW TO RUN CODEC IN MULTITHREAD (THIS IS NATIVE TO FFMPEG)
-// MAYBE WITH THAT WE CAN REMOVE THIS STUPID THREADING I MADE
 void* DoDecoding(void* arg)
 {      
     VideoDecodingCtx *DecodingCtx = (VideoDecodingCtx *)arg;
     while (DecodingThread)
     {
         assert(FrameNextEntryToFill >= *DecodingCtx->frameCountDraw);
-        if ((FrameNextEntryToFill - *DecodingCtx->frameCountDraw < gap))
+        if (FrameNextEntryToFill - *DecodingCtx->frameCountDraw < gap)
         {
             if (av_read_frame(DecodingCtx->pFormatContext, DecodingCtx->pPacket) < 0){break;}
 
             if (DecodingCtx->pPacket->stream_index == DecodingCtx->videoStreamIndex) 
             {   
+                    // assert((unsigned char)FrameNextEntryToFill < ARRAY_COUNT(FrameQueue));
                     frame_work_queue_entry* pFrame = FrameQueue + FrameNextEntryToFill%gap;
                     
                     avcodec_send_packet(DecodingCtx->pVideoCodecCtx, DecodingCtx->pPacket);
                     avcodec_receive_frame(DecodingCtx->pVideoCodecCtx, pFrame->Frame);
                     av_packet_unref(DecodingCtx->pPacket);
                     __sync_add_and_fetch(&FrameNextEntryToFill, 1);
+
             }
         }
     }
@@ -124,16 +123,16 @@ void* DoDecoding(void* arg)
 void* UpdateFrame(void* arg)
 {
     VideoState *videoState = (VideoState *)arg;
-    // pthread_t thread_id = pthread_self(); // Get the thread ID
+    pthread_t thread_id = pthread_self(); // Get the thread ID
 
     while (DecodingThread)
     {
         int32_t OriginalFrameCount = videoState->frameCountDraw;
 
-        printf("FrameCountDraw: %d, FramCOuntSHow: %llu\n",OriginalFrameCount%gap, videoState->frameCountShow%gap);
-        // assert(OriginalFrameCount >= videoState->frameCountShow);
-        if (OriginalFrameCount - videoState->frameCountShow < gap-1)
+        assert(OriginalFrameCount >= videoState->frameCountShow);
+        if (OriginalFrameCount - videoState->frameCountShow < gap)
         {
+            // printf("111Todraw: %llu,ToShow: %d, FrameNextEntry: %u, ID: %lu\n", videoState->frameCountDraw,videoState->frameCountShow,FrameNextEntryToFill, thread_id);
             if ((OriginalFrameCount < FrameNextEntryToFill) && FrameNextEntryToFill > 0) //If frameCount too close to NextEntry it fails.. idk why for now
             {   
 
@@ -142,7 +141,11 @@ void* UpdateFrame(void* arg)
                 if (InitialValue == OriginalFrameCount) //If the original is what we thought it should be
                 {
                     frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountDraw-1)%gap;
-                    // videoState->currVideoTime = 0; //(double)FramePtr->Frame->pts*time_base; //TODO this will not work with more than one thread
+                    // texture_work_queue_entry* TextPtr = TextureQueue + (videoState->frameCount-1)%gap;
+                    videoState->currFrame  = FramePtr->Frame;
+                    videoState->Incremental = false;
+                    videoState->currVideoTime = 0; //(double)FramePtr->Frame->pts*time_base; //TODO this will not work with more than one thread
+                    // printf("222Frame Count: %llu,OriginalFrameCount: %d, FrameNextEntry: %u, ID: %lu\n", videoState->frameCountDraw,OriginalFrameCount,FrameNextEntryToFill, thread_id);
                     sws_scale(videoState->sws_ctx, FramePtr->Frame->data, FramePtr->Frame->linesize, 0,
                                 FramePtr->Frame->height, FramePtr->pRGBFrame->data, FramePtr->pRGBFrame->linesize);
                     __sync_add_and_fetch(&videoState->blah,1);
@@ -155,18 +158,18 @@ void* UpdateFrame(void* arg)
 
 }
 
-inline
 AVFrame *GetFrame(VideoState *videoState)
 {
     int32_t OriginalFrameCount = videoState->blah;
 
+    // printf("OriginalFrameCount: %d,frameCountShow: %llu\n", OriginalFrameCount, videoState->frameCountShow);
     if (videoState->frameCountShow < OriginalFrameCount)
     {   
+        // printf("oi\n");
         frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountShow)%gap;
-        videoState->currVideoTime = (double)FramePtr->Frame->pts*videoState->timebase;
-        if (!videoState->stop) __sync_add_and_fetch(&videoState->frameCountShow,1);
         return FramePtr->pRGBFrame;
     }
+    // printf("xau\n");
     return NULL;
 }
 
@@ -269,7 +272,7 @@ int main(void)
 
     // Open video file
     AVFormatContext *pFormatContext = avformat_alloc_context(); // = (NULL) ?
-    avformat_open_input(&pFormatContext, "84.mp4", NULL, NULL); //This reads the header (maybe not codec)
+    avformat_open_input(&pFormatContext, "1.mov", NULL, NULL); //This reads the header (maybe not codec)
     // printf("Format %s, duration %lld us", pFormatContext->iformat->long_name, pFormatContext->duration);
     avformat_find_stream_info(pFormatContext, NULL); //get streams
 
@@ -294,10 +297,6 @@ int main(void)
     // registered decoder for the codec id and return an AVCodec, the component that knows how to enCOde and DECode the stream.
     const AVCodec *pVideoCodec = avcodec_find_decoder(pVideoCodecParams->codec_id);
 
-
-    //TODO WE NEED TO UNDERSTAND HOW TO RUN CODEC IN MULTITHREAD (THIS IS NATIVE TO FFMPEG)
-    // MAYBE WITH THAT WE CAN REMOVE THIS STUPID THREADING I MADE
-
     // Create codec context for the video stream
     AVCodecContext *pVideoCodecCtx = avcodec_alloc_context3(pVideoCodec);
     avcodec_parameters_to_context(pVideoCodecCtx, pVideoCodecParams);
@@ -312,56 +311,57 @@ int main(void)
 
     struct SwsContext *sws_ctx         = sws_alloc_context();
     sws_ctx = sws_getContext(VideoWidth, VideoHeight, pVideoCodecCtx->pix_fmt,
-                             1080, 720, AV_PIX_FMT_RGB24,
+                             VideoWidth, VideoHeight, AV_PIX_FMT_RGB24,
                              SWS_FAST_BILINEAR, 0, 0, 0);
 
     // Allocate buffer for RGB data
     AVFrame *pRGBFrame = av_frame_alloc();
     pRGBFrame->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
-    pRGBFrame->width  = 1080;
-    pRGBFrame->height = 720;
-    pRGBFrame->linesize[0] = 1080 * 3;
+    pRGBFrame->width  = VideoWidth;
+    pRGBFrame->height = VideoHeight;
     av_frame_get_buffer(pRGBFrame, 0);
-    AVFrame *pRGBFrameTemp = av_frame_alloc();
-    pRGBFrameTemp->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
-    pRGBFrameTemp->width  = 1080;
-    pRGBFrameTemp->height = 720;
-    pRGBFrameTemp->linesize[0] = 1080 * 3;
-    av_frame_get_buffer(pRGBFrameTemp, 0);
 
     for (u32 i = 0; i < gap; i++)
     {
         AVFrame *pRGBFrame = av_frame_alloc();
         pRGBFrame->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
-        pRGBFrame->width  = 1080;
-        pRGBFrame->height = 720;
-        // pRGBFrame->linesize = linesize;
-        pRGBFrame->linesize[0] = 1080 * 3;
+        pRGBFrame->width  = VideoWidth;
+        pRGBFrame->height = VideoHeight;
+        av_frame_get_buffer(pRGBFrame, 0);
+        TextureQueue[i].pRGBFrame = pRGBFrame;
+    }
+
+    for (u32 i = 0; i < gap; i++)
+    {
+        AVFrame *pRGBFrame = av_frame_alloc();
+        pRGBFrame->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
+        pRGBFrame->width  = VideoWidth;
+        pRGBFrame->height = VideoHeight;
         av_frame_get_buffer(pRGBFrame, 0);
         FrameQueue[i].pRGBFrame = pRGBFrame;
     }
 
     Texture texture = {0};
-    texture.width   = 1080;
-    texture.height  = 720;
+    texture.height  = VideoHeight;
+    texture.width   = VideoWidth;
     texture.format  = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
     texture.mipmaps = 1;
     texture.id = rlLoadTexture(NULL, texture.width, texture.height, texture.format, texture.mipmaps);
 
     Image image = {0};
-    image.width = 1080;
-    image.height = 720;
+    image.height = VideoHeight;
+    image.width = VideoWidth;
     image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
     image.mipmaps = 1;
-
-    Image tempImage = {0};
 
     VideoState videoState = {0};
     videoState.frameCountDraw = 0;
     videoState.frameCountShow = 0;
     videoState.duration = duration;
+    videoState.pRGBFrame = pRGBFrame;
+    videoState.height = VideoHeight;
     videoState.sws_ctx = sws_ctx;
-    videoState.timebase = time_base;
+    videoState.width = VideoWidth;
 
     struct VideoDecodingCtx DecodingCtx;
     DecodingCtx.pFormatContext = pFormatContext;
@@ -369,7 +369,6 @@ int main(void)
     DecodingCtx.videoStreamIndex = videoStreamIndex;
     DecodingCtx.pPacket = av_packet_alloc();
     DecodingCtx.frameCountDraw = &videoState.frameCountDraw;
-    DecodingCtx.stop = &videoState.stop;
     pthread_t threads[NUM_THREADS];
 
     if (pthread_create(&threads[0], NULL, DoDecoding, &DecodingCtx) != 0)
@@ -382,6 +381,11 @@ int main(void)
         perror("pthread_create");
         return 1;
     }
+    // if (pthread_create(&threads[2], NULL, UpdateFrame, &videoState) != 0)
+    // {
+    //     perror("pthread_create");
+    //     return 1;
+    // }
 
     // We want the application to run freely but the video to run at its FPS... Thats why we use videoState.currFrameTime
     // Maybe ideally we need second thread to render the video.. but I dont belive this is possible with RayLib
@@ -390,11 +394,9 @@ int main(void)
 
     Rectangle face = {0,0,0,0};
     Vector2 dragVec;
-    float TimePerFrame = 1/(float)FPS;
+    float TimePerFrame = 1/(float)FPS/4;
     u32 frame_count = 0;
-    float total = 0;
-    // float VideoWidthToScreen = (float)SCREEN_WIDTH/1080;
-    // float VideoHeightToScreen = (float)SCREEN_HEIGHT/720;
+    float total =0;
     // printf("Drag: %f,%f", dragVec.x,dragVec.y);
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
@@ -403,62 +405,83 @@ int main(void)
         // videoState.currRealTime += currTime;
         videoState.currFrameTime += currTime; 
         total += currTime;
-        // printf("now: %f, %f\n", videoState.currFrameTime,TimePerFrame);
+        printf("Current Frame Time: %f\n", videoState.currFrameTime);
         if (videoState.currFrameTime >= TimePerFrame || videoState.frameCountDraw == 0)
         {   
-            // if (!videoState.stop || videoState.Incremental)
-            // {   
-                // videoState.currFrameTime = 0;
-                pRGBFrameTemp = GetFrame(&videoState);
-                videoState.Incremental = false;
-
-            // }
-            if (pRGBFrameTemp)
-            {
-
-                // if(videoState.stop)pRGBFrame = GetFrame(&videoState);
+            if (!videoState.stop || videoState.Incremental)
+            {   
                 videoState.currFrameTime = 0;
-                printf("now: %f, %f\n", videoState.currFrameTime,TimePerFrame);
-                // if (face.width > 0 && face.height > 0)
-                // {
-                    // printf("x,y: %f,%f\n", face.x-500,face.y);
-                    printf("OI\n");
-                    if (videoState.stop)
-                    {
-                        av_frame_copy(pRGBFrame, pRGBFrameTemp);
-                        image.data = pRGBFrame->data[0];
-                    }
-                    else image.data = pRGBFrameTemp->data[0];
-                    float x = ((face.x - 500)/500)*1080;
-                    float y = (face.y/500)*720;
-                    float w = (face.width/500)*1080;
-                    float h = (face.height/500)*720;
-                    tempImage = ImageFromImage(image, (Rectangle){x,y,w,h});
-                    ImageBlurGaussian(&tempImage,15);
-                    ImageDraw(&image, tempImage, (Rectangle){0, 0, (float)tempImage.width, (float)tempImage.height},(Rectangle){x , y, w, h}, WHITE);
-                    UpdateTexture(texture,image.data);
-                // }
-                frame_count++;
-                UpdateTexture(texture, image.data);
-            } 
-
-
+                pRGBFrame = GetFrame(&videoState);
+                // printf("GetFrame\n");
+                if (pRGBFrame)
+                {
+                    frame_count++;
+                    UpdateTexture(texture, pRGBFrame->data[0]);
+                    __sync_add_and_fetch(&videoState.frameCountShow,1);
+                } 
+            }
         }
-        // else
-        // {
-        //     printf("now: %f, %f\n", videoState.currFrameTime,TimePerFrame);
+        else
+        {
+            printf("now\n");
+        }
+        //         // videoState.currFrameTime = 0;
+        //         printf("Frame Count: %llu FrameNextEntry: %u\n", videoState.frameCount,FrameNextEntryToFill);
+        //         fflush(stdout);
+        //         // TODO understand the error if we take -1 out
+
+                
+        //         if ((videoState.frameCount < FrameNextEntryToFill ) && (FrameNextEntryToFill > 0)) //If frameCount too close to NextEntry it fails.. idk why for now
+        //         {   
+        //             frame_work_queue_entry* FramePtr = FrameQueue + videoState.frameCount%gap;
+        //             // videoState.currFrame  = FramePtr->pRGBFrame;
+        //             __sync_add_and_fetch(&videoState.frameCount, 1);
+        //             // videoState.frameCount++;
+        //             videoState.Incremental = false;
+        //             videoState.currVideoTime = (double)FramePtr->Frame->pts*time_base;
+
+                    // PLEASE UNDERSTAND THIS !!!!!!!!!
+                    // It doest make sense.. if we put this outside the if (stop) when we pause the FPS goes down
+                    // TODO maybe make this in another thread
+                    // sws_scale(sws_ctx, videoState.currFrame->data, videoState.currFrame->linesize, 0,
+                    //             videoState.currFrame->height, pRGBFrame->data, pRGBFrame->linesize);
+                    
+                    // Create a temporary image and copy the specific region into it
+                    // image.data = pRGBFrame->data[0];
+
+                    // Invert the color of the temporary image
+
+                    // Copy the modified region from the temporary image back to the original image
+                    // if (face.width > 10 && face.height > 10)
+                    // {
+                    //     printf("x,y: %f,%f\n", face.x-500,face.y);
+                    //     Image tempImage = ImageFromImage(image, (Rectangle){face.x - 500, face.y, face.width, face.height});
+                    //     ImageColorInvert(&tempImage);
+                    //     ImageDraw(&image, tempImage, (Rectangle){0, 0, face.width, face.height},(Rectangle){face.x , face.y, (float)texture.width, (float)texture.height}, WHITE);
+                    // }
+                    // printf("Video H,W: %d,%d\n", VideoWidth, image.width);
+                    // ImageColorInvert(&image);  
+                    // UpdateTexture(texture, image.data);
+        //             UpdateTexture(texture, FramePtr->pRGBFrame->data[0]);
+        //         }
+        //         else
+        //         {
+        //         printf("Too Fast Render\n");
+        //         }
+
+        //     }
         // }
        
+        // This whole thing breaks when we let the FPS go high
         if (videoState.frameCountDraw > 0)
         {
+            //TODO Check if pFrame is valid
+            // printf("img ptr %p\n", videoState.currFrame->data);
             BeginDrawing(); 
                 ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
 
                 DrawTexturePro(texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
                         (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
-                // DrawTexturePro(text, (Rectangle){0, 0, (float)tempImage.width, (float)tempImage.height},
-                        // (Rectangle){0, 100, 100, 100}, (Vector2){0, 0}, 0, WHITE);
-                // DrawTexture(text,0,0,WHITE);
                 DrawRectangleRoundedLines(face, 2, 2, 2, RED);
                 Slider(&videoState);
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState.currVideoTime, duration), SCREEN_WIDTH-200, 0, 20, WHITE);
@@ -468,8 +491,7 @@ int main(void)
                 DrawText(TextFormat("TOTAL FRAMES: %lld",videoState.frameCountDraw), SCREEN_WIDTH-215, 40, 20, WHITE);
                 DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
                 DrawFPS(0,40);
-            EndDrawing();   
-            // UnloadTexture(text);
+            EndDrawing();    
         }
     }
     // Cleanup resources
