@@ -70,13 +70,8 @@ struct VideoDecodingCtx
 struct frame_work_queue_entry //We need to free this
 {
     AVFrame *Frame = av_frame_alloc();
-    AVFrame *pRGBFrame;
+    AVFrame *pRGBFrame = av_frame_alloc();
 
-};
-
-struct texture_work_queue_entry //We need to free this
-{
-    AVFrame *pRGBFrame;
 };
 
 struct VideoState 
@@ -90,6 +85,7 @@ struct VideoState
     Rectangle face;
     
     AVFrame *pRGBFrameTemp;
+    AVFrame *pRGBFramePrevTemp;
     AVFrame *pRGBFrame;
     
 
@@ -123,9 +119,8 @@ struct VideoState
 Rectangle Faces[10];
 // A very poor and maybe bad idea of circular buffering for 
 // saving memory and maybe some hot memory use
-const int gap = 3;
+const int gap = 16;
 frame_work_queue_entry FrameQueue[gap];
-texture_work_queue_entry TextureQueue[gap];
 static u32 volatile FrameNextEntryToFill = 0;
 static bool volatile DecodingThread = true;
 int currentGesture = GESTURE_NONE;
@@ -137,6 +132,46 @@ pthread_t threads[NUM_THREADS];
 sem_t pauseSemaphore;
 dispatch_semaphore_t semaphore;
 
+void CleanUpVideo(VideoState *VideoState)
+{
+    printf("0\n");
+    DecodingThread = false;
+    printf("1\n");
+    dispatch_semaphore_signal(semaphore);
+    printf("2\n");
+    dispatch_semaphore_signal(semaphore);
+    printf("3\n");
+    pthread_join(threads[0], NULL);
+    printf("4\n");
+    pthread_join(threads[1], NULL);
+    printf("5\n");
+    sws_freeContext(VideoState->sws_ctx);
+    printf("6\n");
+    // UnloadImage(VideoState->image);
+    printf("7\n");
+    UnloadImage(VideoState->tempImage);
+    printf("8\n");
+    UnloadTexture(VideoState->texture);
+    printf("9\n");
+    if (VideoState->pRGBFrame->data[0]) av_frame_free(&VideoState->pRGBFrame);
+    printf("10\n");
+    if (VideoState->pRGBFrameTemp->data[0]) av_frame_free(&VideoState->pRGBFrameTemp);
+    printf("11\n");
+    avformat_close_input(&VideoState->pFormatContext);
+    printf("12\n");
+    av_packet_unref(VideoState->pPacket);
+    printf("13\n");
+    av_packet_free(&VideoState->pPacket);
+    printf("14\n");
+    avcodec_free_context(&VideoState->pVideoCodecCtx);
+    printf("15\n");
+    free(VideoState);
+    printf("16\n");
+    DecodingThread = true;
+    printf("17\n");
+    FrameNextEntryToFill = 0;
+    printf("18\n");
+}
 
 //TODO WE NEED TO UNDERSTAND HOW TO RUN CODEC IN MULTITHREAD (THIS IS NATIVE TO FFMPEG)
 // MAYBE WITH THAT WE CAN REMOVE THIS STUPID THREADING I MADE
@@ -181,11 +216,11 @@ void* UpdateFrame(void* arg)
     {
         //TODO maybe do an atomic load of videoState->stop;
         if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-        // printf("alive2\n");
+        printf("alive2 %lf\n", GetTime());
         int32_t OriginalFrameCount = videoState->frameCountDraw;
 
         assert(OriginalFrameCount >= videoState->frameCountShow);
-        if (OriginalFrameCount - videoState->frameCountShow < gap-1)
+        if (OriginalFrameCount - videoState->frameCountShow < gap)
         {
             if ((OriginalFrameCount < FrameNextEntryToFill) && FrameNextEntryToFill > 0) //If frameCount too close to NextEntry it fails.. idk why for now
             {   
@@ -204,82 +239,29 @@ void* UpdateFrame(void* arg)
         }
         else
         {
-            // printf("waste of cpu 2\n");
+            printf("waste of cpu 2\n");
         }
     }
     pthread_exit(NULL);
-
 }
 
 inline
 AVFrame *GetFrame(VideoState *videoState)
 {
-    int32_t OriginalFrameCount = videoState->blah;
-
-    if (videoState->frameCountShow < OriginalFrameCount)
-    {   
-        frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountShow)%gap;
-        if (!videoState->stop || videoState->Incremental)
-        {
-            videoState->currVideoTime = (double)FramePtr->Frame->pts*videoState->timebase;
-            videoState->Incremental = false;
-            __sync_add_and_fetch(&videoState->frameCountShow,1);
-        } 
-        return FramePtr->pRGBFrame;
-    }
-    return NULL;
+    // printf("frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",videoState->frameCountShow,videoState->blah,videoState->frameCountDraw);
+    assert(videoState->frameCountShow < videoState->blah);
+    frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountShow)%gap;
+    videoState->currVideoTime = (double)FramePtr->Frame->pts*videoState->timebase;
+    __sync_add_and_fetch(&videoState->frameCountShow,1);
+    return FramePtr->pRGBFrame;
 }
 
-void CleanUpAll(VideoDecodingCtx *VideoDecodingCtx, frame_work_queue_entry FrameQueue[], u32 SizeOfQueue, AVFrame *pRGBFrame, struct SwsContext *swsContext)
-{
-
-    for (u32 i = 0; i < SizeOfQueue; i++)
-    {
-        av_frame_free(&(FrameQueue[i].Frame));
-    }
-    av_frame_free(&pRGBFrame);
-    // UnloadTexture(*texture);
-    sws_freeContext(swsContext);
-    avformat_close_input(&VideoDecodingCtx->pFormatContext);
-    av_packet_unref(VideoDecodingCtx->pPacket);
-    av_packet_free(&VideoDecodingCtx->pPacket);
-    avcodec_free_context(&VideoDecodingCtx->pVideoCodecCtx);
-    printf("Cleaned All...\n");
-}
-
-void CleanUpVideo(VideoState *VideoState)
-{
-    DecodingThread = false;
-    dispatch_semaphore_signal(semaphore);
-    dispatch_semaphore_signal(semaphore);
-    pthread_join(threads[0], NULL);
-    pthread_join(threads[1], NULL);
-    sws_freeContext(VideoState->sws_ctx);
-    UnloadImage(VideoState->image);
-    UnloadImage(VideoState->tempImage);
-    UnloadTexture(VideoState->texture);
-
-    av_frame_free(&VideoState->pRGBFrame);
-    av_frame_free(&VideoState->pRGBFrameTemp);
-
-    avformat_close_input(&VideoState->pFormatContext);
-    av_packet_unref(VideoState->pPacket);
-    av_packet_free(&VideoState->pPacket);
-    avcodec_free_context(&VideoState->pVideoCodecCtx);
-    free(VideoState);
-    DecodingThread = true;
-    FrameNextEntryToFill = 0;
-
-}
-
-Vector2 dragVec;
 inline
 void Controller(VideoState * videoState, Rectangle *face)
 {
     static int counter;
     if (IsKeyPressed(KEY_SPACE))
     {
-        // stop = (stop == 0)? 1 : 0;
         videoState->stop = !videoState->stop;
         if (!videoState->stop){
             dispatch_semaphore_signal(semaphore);
@@ -290,9 +272,24 @@ void Controller(VideoState * videoState, Rectangle *face)
 
     if (IsKeyPressed(KEY_RIGHT))
     {
-        if (!videoState->stop) videoState->stop = !videoState->stop;
-        videoState->Decrement = false;
-        videoState->Incremental = true;
+
+        if (videoState->stop)
+        {
+            videoState->stop = false;
+            dispatch_semaphore_signal(semaphore);
+            dispatch_semaphore_signal(semaphore);   
+        }
+
+        bool getFrame = true;
+        while(getFrame)
+        {
+            if (videoState->frameCountShow < videoState->blah)
+            {
+                videoState->pRGBFrameTemp = GetFrame(videoState);
+                getFrame = false;
+                videoState->stop = true;
+            }
+        }
     }
 
     if (IsKeyDown(KEY_RIGHT))
@@ -335,7 +332,6 @@ void Controller(VideoState * videoState, Rectangle *face)
         face->height = GetMouseY() - face->y;
     }
 }
-
 
 void Slider(VideoState *VideoState)
 {
@@ -436,8 +432,6 @@ VideoState *InitializeVideo(const char *path)
 
     Image tempImage = {0};
 
-
-
     Rectangle face = {0,0,0,0};
     VideoState *videoState = (VideoState*)malloc(sizeof(VideoState));
     videoState->frameCountDraw = 0;
@@ -445,7 +439,7 @@ VideoState *InitializeVideo(const char *path)
     videoState->duration = duration;
     videoState->sws_ctx = sws_ctx;
     videoState->timebase = time_base;
-    videoState->stop = true;
+    videoState->stop = false;
     videoState->image = image;
     videoState->pRGBFrameTemp = pRGBFrameTemp;
     videoState->pRGBFrame = pRGBFrame;
@@ -477,8 +471,6 @@ VideoState *InitializeVideo(const char *path)
 int main(void)
 {   
     semaphore = dispatch_semaphore_create(0);
-    // sem_init(&pauseSemaphore, 0, 0);
-    // sem_wait(&pause_semaphore); 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "BlurryFaces");
 
@@ -504,51 +496,64 @@ int main(void)
                 printf("%s %s\n",fileDialogState.dirPathText,fileDialogState.fileNameText);
                 UIstate = VIDEOSELECTED;
                 fileDialogState.SelectFilePressed = false;
+                bool getFirst = true;
+                while(getFirst)
+                {
+                    if (videoState->frameCountShow < videoState->blah)
+                    {
+                        videoState->pRGBFrameTemp = GetFrame(videoState);
+                        getFirst = false;
+                    }
+                    videoState->stop = true;
+                }
             }
         }
 
         if (UIstate)
         {   
+           
             // printf("Frame Draw: %llu,Frame Show: %llu\n", videoState->frameCountDraw, videoState->frameCountShow);
             // printf("----\n");
             Controller(videoState, &videoState->face);
             float currTime = GetFrameTime();
             videoState->currFrameTime += currTime; 
-            if (!videoState->stop) videoState->currRealTime += currTime;
-            if (videoState->currFrameTime >= videoState->TimePerFrame/2 || videoState->frameCountDraw == 0)
-            {   
-                // videoState->currFrameTime = 0;
-                videoState->pRGBFrameTemp = GetFrame(videoState);
+            if (!videoState->stop)
+            {
+                videoState->currRealTime += currTime;
                 
-                if (videoState->pRGBFrameTemp)
-                {
-                    videoState->currFrameTime = 0;
-                    if (videoState->face.width > 0 && videoState->face.height > 0)
+                if (videoState->currFrameTime >= videoState->TimePerFrame/4 || videoState->frameCountDraw == 0)
+                {  
+                    if (videoState->frameCountShow < videoState->blah)
                     {
-                        if (videoState->stop)
-                        {
-                            av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
-                            videoState->image.data = videoState->pRGBFrame->data[0];
-                        }
-                        else videoState->image.data = videoState->pRGBFrameTemp->data[0];
-                        float x = ((videoState->face.x - 500)/500)*1080;
-                        float y = (videoState->face.y/500)*720;
-                        float w = (videoState->face.width/500)*1080;
-                        float h = (videoState->face.height/500)*720;
-                        videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
-                        ImageBlurGaussian(&videoState->tempImage,15);
-                        ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
-                        UpdateTexture(videoState->texture,videoState->image.data);
+                        videoState->currFrameTime = 0;
+                        videoState->pRGBFrameTemp = GetFrame(videoState);
                     }
-                    else
-                    {
-                        UpdateTexture(videoState->texture,videoState->pRGBFrameTemp->data[0]);
-                    }
-                } 
+                }
             }
+
+            if (videoState->face.width > 0 && videoState->face.height > 0)
+            {
+                if (videoState->stop)
+                {
+                    av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
+                    videoState->image.data = videoState->pRGBFrame->data[0];
+                }
+                else videoState->image.data = videoState->pRGBFrameTemp->data[0];
+                float x = ((videoState->face.x - 500)/500)*1080;
+                float y = (videoState->face.y/500)*720;
+                float w = (videoState->face.width/500)*1080;
+                float h = (videoState->face.height/500)*720;
+                videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
+                ImageBlurGaussian(&videoState->tempImage,15);
+                ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
+                UpdateTexture(videoState->texture,videoState->image.data);
+            }
+            else
+            {
+                UpdateTexture(videoState->texture,videoState->pRGBFrameTemp->data[0]);
+            }
+
         }
-        // if (videoState->frameCountDraw > 0)
-        // {
         BeginDrawing(); 
             ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
             if (UIstate)
@@ -559,11 +564,9 @@ int main(void)
                 Slider(videoState);
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, videoState->duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState->currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
-                //This Is causing segfault even bf loading video.. weird!!!!
                 DrawText(TextFormat("Real FPS: %f / %d", (float)videoState->frameCountShow/videoState->currRealTime, videoState->FPS), 0, 0, 20, WHITE);
                 DrawText(TextFormat("Max Curr FPS: %lf / %d", 1/videoState->TimePerFrame, videoState->FPS), 0, 20, 20, WHITE);
                 DrawText(TextFormat("TOTAL FRAMES: %lld",videoState->frameCountDraw), SCREEN_WIDTH-215, 40, 20, WHITE);
-                DrawText(TextFormat("Drag: %f,%f",dragVec.x,dragVec.y), SCREEN_WIDTH-215, 60, 15, WHITE);
             }
             DrawFPS(0,40);
             if (fileDialogState.windowActive) GuiLock();
@@ -576,7 +579,6 @@ int main(void)
             GuiWindowFileDialog(&fileDialogState);
             //--------------------------------------------------------------------------------
         EndDrawing();   
-        // }
     }
     // Cleanup resources
     // TODO -- STOP THREAD
@@ -590,7 +592,6 @@ int main(void)
     {
         CleanUpVideo(videoState);
     }
-    // CleanUpAll(&DecodingCtx,FrameQueue,ARRAY_COUNT(FrameQueue),pRGBFrame,sws_ctx);
     CloseWindow();                  // Close window and OpenGL context
     return 0;
 }
