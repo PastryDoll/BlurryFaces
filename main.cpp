@@ -74,6 +74,14 @@ struct frame_work_queue_entry //We need to free this
 
 };
 
+struct Face
+{
+    Rectangle Box;
+    bool inside;
+    bool selected;
+    bool done;
+};
+
 struct VideoState 
 {
     struct SwsContext *sws_ctx;
@@ -82,7 +90,7 @@ struct VideoState
     Image tempImage;
     Texture texture;
 
-    Rectangle face;
+    Face face;
     
     AVFrame *pRGBFrameTemp;
     AVFrame *pRGBFramePrevTemp;
@@ -105,6 +113,7 @@ struct VideoState
     float currVideoTime;
     float currFrameTime;
 
+    float speed;
     float duration;
     bool stop;
     bool Incremental;
@@ -116,7 +125,7 @@ struct VideoState
 
 };
 
-Rectangle Faces[10];
+
 // A very poor and maybe bad idea of circular buffering for 
 // saving memory and maybe some hot memory use
 const int gap = 16;
@@ -202,7 +211,7 @@ void* DoDecoding(void* arg)
         }
         else
         {
-            printf("waste of cpu 1\n");
+            // printf("waste of cpu 1\n");
         }
     }
     pthread_exit(NULL);
@@ -216,30 +225,37 @@ void* UpdateFrame(void* arg)
     {
         //TODO maybe do an atomic load of videoState->stop;
         if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-        printf("alive2 %lf\n", GetTime());
-        int32_t OriginalFrameCount = videoState->frameCountDraw;
+        // printf("alive2 %lf\n", GetTime());
+        int32_t OriginalFrameCountDraw = videoState->frameCountDraw;
 
-        assert(OriginalFrameCount >= videoState->frameCountShow);
-        if (OriginalFrameCount - videoState->frameCountShow < gap)
+        assert(videoState->frameCountDraw >= videoState->frameCountShow);
+        // Okay so this -1 is subtle and we might fix this soon..
+        // What happens is that when we update the texture we can be using previous frame...
+        // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
+        // now framecounttoshow 10 can be changed and we will keep updating the texture with it untill we get right FPS
+        if (OriginalFrameCountDraw - videoState->frameCountShow < gap-1)
         {
-            if ((OriginalFrameCount < FrameNextEntryToFill) && FrameNextEntryToFill > 0) //If frameCount too close to NextEntry it fails.. idk why for now
+
+            if ((OriginalFrameCountDraw < FrameNextEntryToFill) && FrameNextEntryToFill > 0) //If frameCount too close to NextEntry it fails.. idk why for now
             {   
 
-                int32_t InitialValue = __sync_val_compare_and_swap(&videoState->frameCountDraw, OriginalFrameCount, OriginalFrameCount+1);
+                int32_t InitialValue = __sync_val_compare_and_swap(&videoState->frameCountDraw, OriginalFrameCountDraw, OriginalFrameCountDraw+1);
 
-                if (InitialValue == OriginalFrameCount) //If the original is what we thought it should be
+                if (InitialValue == OriginalFrameCountDraw) //If the original is what we thought it should be
                 {
                     frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountDraw-1)%gap;
                     sws_scale(videoState->sws_ctx, FramePtr->Frame->data, FramePtr->Frame->linesize, 0,
                                 FramePtr->Frame->height, FramePtr->pRGBFrame->data, FramePtr->pRGBFrame->linesize);
                     __sync_add_and_fetch(&videoState->blah,1);
+                    // printf("frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",videoState->frameCountShow,videoState->blah,(videoState->frameCountDraw-1));
+                    // printf("frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",videoState->frameCountShow%gap,videoState->blah%gap,(videoState->frameCountDraw-1)%gap);
                     
                 }
             }
         }
         else
         {
-            printf("waste of cpu 2\n");
+            // printf("waste of cpu 2\n");
         }
     }
     pthread_exit(NULL);
@@ -248,7 +264,6 @@ void* UpdateFrame(void* arg)
 inline
 AVFrame *GetFrame(VideoState *videoState)
 {
-    // printf("frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",videoState->frameCountShow,videoState->blah,videoState->frameCountDraw);
     assert(videoState->frameCountShow < videoState->blah);
     frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountShow)%gap;
     videoState->currVideoTime = (double)FramePtr->Frame->pts*videoState->timebase;
@@ -257,17 +272,28 @@ AVFrame *GetFrame(VideoState *videoState)
 }
 
 inline
-void Controller(VideoState * videoState, Rectangle *face)
+void Pause(VideoState *videoState)
+{
+    videoState->stop = !videoState->stop;
+    if (!videoState->stop)
+    {
+        dispatch_semaphore_signal(semaphore);
+        dispatch_semaphore_signal(semaphore);
+    }
+    printf("Pause: %i\n", videoState->stop);
+}
+
+bool done = false;
+bool selected;
+float initialx;
+float initialy;
+inline
+void Controller(VideoState * videoState, Face *face)
 {
     static int counter;
     if (IsKeyPressed(KEY_SPACE))
     {
-        videoState->stop = !videoState->stop;
-        if (!videoState->stop){
-            dispatch_semaphore_signal(semaphore);
-            dispatch_semaphore_signal(semaphore);
-        }
-        printf("Pause: %i\n", videoState->stop);
+        Pause(videoState);
     }
 
     if (IsKeyPressed(KEY_RIGHT))
@@ -314,23 +340,80 @@ void Controller(VideoState * videoState, Rectangle *face)
         videoState->Incremental = false;
         videoState->Decrement = true;
     }
-
-    lastGesture = currentGesture;
-    currentGesture = GetGestureDetected();
-
-    if (currentGesture & (GESTURE_TAP | GESTURE_DOUBLETAP | GESTURE_HOLD))
+    if (IsKeyPressed(KEY_BACKSPACE))
     {
-        face->x = GetMouseX();
-        face->y = GetMouseY();
-        face->width = 0;
-        face->height = 0;
+        if(face->selected)
+        {
+            face->Box = (Rectangle){0,0,0,0};
+            face->done = 0;
+            face->selected = 0;
+            face->inside = 0;
+
+        }
     }
-    //TODO - FIX MOUSE OFFSET AT DRAGGING when moving fast
-    if (currentGesture == GESTURE_DRAG)
+
+    currentGesture = GetGestureDetected();
+    face->inside = (CheckCollisionPointRec((Vector2){(float)GetMouseX(),(float)GetMouseY()},(Rectangle){face->Box.x,face->Box.y,face->Box.width,face->Box.height}) && (face->done));
+
+    // Start drawing box
+    if ((currentGesture & (GESTURE_TAP|GESTURE_HOLD)) && !face->done && !face->inside)
+    {
+        face->Box.x = GetMouseX();
+        face->Box.y = GetMouseY();
+        face->Box.width = 0;
+        face->Box.height = 0;
+    }
+    //Drag for size
+    if ((currentGesture == GESTURE_DRAG) && !face->done && !face->inside)
     {   
-        face->width = GetMouseX() - face->x ;
-        face->height = GetMouseY() - face->y;
+        face->Box.width = GetMouseX() - face->Box.x;
+        face->Box.height = GetMouseY() - face->Box.y;
+
     }
+    //Ended Drawing box
+    if (face->Box.width > 0 && currentGesture == GESTURE_NONE)
+    {
+        // printf("done\n");
+        face->done = true;
+    } 
+    if ((currentGesture & (GESTURE_TAP)) && (face->inside))
+    {
+        Vector2 pos = GetMousePosition();
+        initialx = pos.x;
+        initialy = pos.y;
+        face->selected = true;
+    }
+    
+    if ((currentGesture & (GESTURE_DRAG)) && (face->inside))
+    {
+        Vector2 pos1 = GetMousePosition();
+        printf("Initialx : %f, dragx: %f, %lf\n", initialx, pos1.x, GetTime());
+        face->Box.x += pos1.x - initialx;
+        face->Box.y += pos1.y - initialy;
+        initialx = pos1.x;
+        initialy = pos1.y;
+    }
+}
+
+void SpeedLogic(VideoState *videoState, s8 direction)
+{
+    switch (direction)
+    {
+        case -1:
+        {
+            videoState->speed = (videoState->speed > (float)4) ? (float)8 : (float)videoState->speed*2;
+    
+        }
+        break;
+
+        case 1:
+        {
+            videoState->speed = (videoState->speed < (float)1/2) ? (float)1/4 : videoState->speed/2;
+        }
+        break;
+    }
+    printf("Speed: %f\n", videoState->speed);
+
 }
 
 void Slider(VideoState *VideoState)
@@ -371,7 +454,6 @@ VideoState *InitializeVideo(const char *path)
     // registered decoder for the codec id and return an AVCodec, the component that knows how to enCOde and DECode the stream.
     const AVCodec *pVideoCodec = avcodec_find_decoder(pVideoCodecParams->codec_id);
 
-
     //TODO WE NEED TO UNDERSTAND HOW TO RUN CODEC IN MULTITHREAD (THIS IS NATIVE TO FFMPEG)
     // MAYBE WITH THAT WE CAN REMOVE THIS STUPID THREADING I MADE
 
@@ -379,6 +461,7 @@ VideoState *InitializeVideo(const char *path)
     AVCodecContext *pVideoCodecCtx = avcodec_alloc_context3(pVideoCodec);
     avcodec_parameters_to_context(pVideoCodecCtx, pVideoCodecParams);
     avcodec_open2(pVideoCodecCtx, pVideoCodec, NULL);
+
 
     u32 FPS = VideoStream->avg_frame_rate.num / VideoStream->avg_frame_rate.den;
     double time_base = av_q2d(VideoStream->time_base);
@@ -432,7 +515,7 @@ VideoState *InitializeVideo(const char *path)
 
     Image tempImage = {0};
 
-    Rectangle face = {0,0,0,0};
+    Face face = {{0,0,0,0},false,false,false};
     VideoState *videoState = (VideoState*)malloc(sizeof(VideoState));
     videoState->frameCountDraw = 0;
     videoState->frameCountShow = 0;
@@ -453,6 +536,7 @@ VideoState *InitializeVideo(const char *path)
     videoState->pPacket = av_packet_alloc();
     videoState->duration = duration;
     videoState->FPS = FPS;
+    videoState->speed = 1;
     // videoState->SemaphoreHandle = semaphore;
     
     if (pthread_create(&threads[0], NULL, DoDecoding, videoState) != 0)
@@ -517,32 +601,37 @@ int main(void)
             Controller(videoState, &videoState->face);
             float currTime = GetFrameTime();
             videoState->currFrameTime += currTime; 
+
             if (!videoState->stop)
             {
                 videoState->currRealTime += currTime;
                 
-                if (videoState->currFrameTime >= videoState->TimePerFrame/4 || videoState->frameCountDraw == 0)
+                if (videoState->currFrameTime >= videoState->TimePerFrame*videoState->speed || videoState->frameCountDraw == 0)
                 {  
                     if (videoState->frameCountShow < videoState->blah)
                     {
                         videoState->currFrameTime = 0;
                         videoState->pRGBFrameTemp = GetFrame(videoState);
+
                     }
                 }
             }
-
-            if (videoState->face.width > 0 && videoState->face.height > 0)
+            // Okay so this -1 is subtle and we might fix this soon..
+            // What happens is that when we update the texture we can be using previous frame...
+            // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
+            // now framecounttoshow 10 can be changed and we will keep updating the texture with it untill we get right FPS
+            if (videoState->face.Box.width > 0 && videoState->face.Box.height > 0)
             {
-                if (videoState->stop)
-                {
-                    av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
-                    videoState->image.data = videoState->pRGBFrame->data[0];
-                }
-                else videoState->image.data = videoState->pRGBFrameTemp->data[0];
-                float x = ((videoState->face.x - 500)/500)*1080;
-                float y = (videoState->face.y/500)*720;
-                float w = (videoState->face.width/500)*1080;
-                float h = (videoState->face.height/500)*720;
+                // if (videoState->stop)
+                // {
+                av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
+                videoState->image.data = videoState->pRGBFrame->data[0];
+                // }
+                // else videoState->image.data = videoState->pRGBFrameTemp->data[0];
+                float x = ((videoState->face.Box.x - 500)/500)*1080;
+                float y = (videoState->face.Box.y/500)*720;
+                float w = (videoState->face.Box.width/500)*1080;
+                float h = (videoState->face.Box.height/500)*720;
                 videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
                 ImageBlurGaussian(&videoState->tempImage,15);
                 ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
@@ -552,6 +641,9 @@ int main(void)
             {
                 UpdateTexture(videoState->texture,videoState->pRGBFrameTemp->data[0]);
             }
+            //This needs to be here ?? well this is actually the end of the use of the pointer
+            //Not if we are using the gap-1
+            // if(videoState->currFrameTime == 0)__sync_add_and_fetch(&videoState->frameCountShow,1);
 
         }
         BeginDrawing(); 
@@ -560,7 +652,7 @@ int main(void)
             {
                 DrawTexturePro(videoState->texture, (Rectangle){0, 0, (float)videoState->texture.width, (float)videoState->texture.height},
                         (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
-                DrawRectangleRoundedLines(videoState->face, 2, 2, 2, RED);
+                DrawRectangleRoundedLines(videoState->face.Box, 2, 2, 2, videoState->face.selected ? GREEN : RED);
                 Slider(videoState);
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, videoState->duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState->currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
@@ -571,7 +663,11 @@ int main(void)
             DrawFPS(0,40);
             if (fileDialogState.windowActive) GuiLock();
 
-            if (GuiButton((Rectangle){ 0, 200, 140, 30 }, GuiIconText(ICON_FILE_OPEN, "Open Image"))) fileDialogState.windowActive = true;
+            if (GuiButton((Rectangle){ 0, 0, 140, 30 }, GuiIconText(ICON_FILE_OPEN, "Open Image"))) fileDialogState.windowActive = true;
+            if (GuiButton((Rectangle){ 140, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PAUSE, ""))) videoState->stop = true;
+            if (GuiButton((Rectangle){ 120, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PLAY, ""))) Pause(videoState);
+            if (GuiButton((Rectangle){ 140, 300, 140, 30 }, GuiIconText(ICON_ARROW_RIGHT, "Speed Up"))) SpeedLogic(videoState, 1);
+            if (GuiButton((Rectangle){ 0, 300, 140, 30 }, GuiIconText(ICON_ARROW_LEFT, "Slow Down"))) SpeedLogic(videoState, -1);
 
             GuiUnlock();
             // GUI: Dialog Window
