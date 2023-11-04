@@ -142,7 +142,8 @@ pthread_t threads[NUM_THREADS];
 //We also have to learn how to use in the same way the POSIX lib semaphore
 sem_t pauseSemaphore;
 dispatch_semaphore_t semaphore;
-bool active;
+bool activeBlur;
+bool activeSelect;
 
 
 void CleanUpVideo(VideoState *VideoState)
@@ -160,7 +161,7 @@ void CleanUpVideo(VideoState *VideoState)
     printf("5\n");
     sws_freeContext(VideoState->sws_ctx);
     printf("6\n");
-    // UnloadImage(VideoState->image);
+    UnloadImage(VideoState->image);
     printf("7\n");
     UnloadImage(VideoState->tempImage);
     printf("8\n");
@@ -209,7 +210,7 @@ void* DoDecoding(void* arg)
                     avcodec_send_packet(videoState->pVideoCodecCtx, videoState->pPacket);
                     avcodec_receive_frame(videoState->pVideoCodecCtx, pFrame->Frame);
                     av_packet_unref(videoState->pPacket);
-                    // printf("NextEntryToFill: %u, videoState->frameCountDraw: %llu\n" , FrameNextEntryToFill%gap,videoState->frameCountDraw%gap);
+                    printf("NextEntryToFill: %u, videoState->frameCountDraw: %llu\n" , FrameNextEntryToFill%gap,videoState->frameCountDraw%gap);
                     __sync_add_and_fetch(&FrameNextEntryToFill, 1);
             }
         }
@@ -294,7 +295,10 @@ float initialy;
 inline
 void Controller(VideoState * videoState)
 {
-    static int counter;
+    static int counter= 0;
+    static int currNumberFaces = 1;
+    bool insideAnyFace = false;
+    assert(currNumberFaces < MAX_NUMBER_FACES);
     if (IsKeyPressed(KEY_SPACE))
     {
         Pause(videoState);
@@ -348,8 +352,29 @@ void Controller(VideoState * videoState)
 
     currentGesture = GetGestureDetected();
 
+    for (int i = 0; i < currNumberFaces; i++)
+    {
+        Face *face = videoState->face + i;
+        if (CheckCollisionPointRec((Vector2){(float)GetMouseX(),(float)GetMouseY()},(Rectangle){face->Box.x,face->Box.y,face->Box.width,face->Box.height}) && (face->done))
+        {
+            insideAnyFace = true;
+            break;
+        }
+    }
 
-    for (int i = 0; i < MAX_NUMBER_FACES; i++)
+    //Deselect faces clicked outside
+    if ((currentGesture == GESTURE_TAP) && !insideAnyFace)
+    {
+        for (int i = 0; i < currNumberFaces; i++)
+        {
+            Face *face = videoState->face + i;
+            face->selected = false;
+        }
+
+    }
+
+
+    for (int i = 0; i < currNumberFaces; i++)
     {
         Face *face = videoState->face + i;
 
@@ -367,15 +392,11 @@ void Controller(VideoState * videoState)
 
         face->inside = (CheckCollisionPointRec((Vector2){(float)GetMouseX(),(float)GetMouseY()},(Rectangle){face->Box.x,face->Box.y,face->Box.width,face->Box.height}) && (face->done));
 
-        if (i > 0)
-        {
-            if ((!videoState->face[i-1].done) && (!videoState->face[i-1].inside)) break;
-        }
-
-        if (active)
+        //We are creating Faces.. not multi selecting them
+        if (activeBlur || IsKeyDown(KEY_TAB))
         {
             // Start drawing box
-            if ((currentGesture & (GESTURE_TAP|GESTURE_HOLD)) && !face->done && !face->inside)
+            if ((currentGesture & (GESTURE_TAP|GESTURE_HOLD)) && !face->done && !insideAnyFace)
             {
                 face->Box.x = GetMouseX();
                 face->Box.y = GetMouseY();
@@ -383,7 +404,7 @@ void Controller(VideoState * videoState)
                 face->Box.height = 0;
             }
             //Drag for size
-            if ((currentGesture == GESTURE_DRAG) && !face->done && !face->inside)
+            if ((currentGesture == GESTURE_DRAG) && !face->done && !insideAnyFace)
             {   
                 face->Box.width = GetMouseX() - face->Box.x;
                 face->Box.height = GetMouseY() - face->Box.y;
@@ -391,11 +412,14 @@ void Controller(VideoState * videoState)
             }
         }
         //Ended Drawing box
-        if (face->Box.width > 0 && currentGesture == GESTURE_NONE)
+        if (face->Box.width > 0 && currentGesture == GESTURE_NONE && !face->done) 
         {
-            // printf("done\n");
+            printf("done\n");
             face->done = true;
+            currNumberFaces++;
         } 
+
+        //Select a face
         if ((currentGesture & (GESTURE_TAP)) && (face->inside))
         {
             Vector2 pos = GetMousePosition();
@@ -404,10 +428,11 @@ void Controller(VideoState * videoState)
             face->selected = true;
         }
         
-        if ((currentGesture & (GESTURE_DRAG)) && (face->inside))
+        //Drag Face
+        if ((currentGesture & (GESTURE_DRAG)) && (face->inside) && (face->selected))
         {
             Vector2 pos1 = GetMousePosition();
-            printf("Initialx : %f, dragx: %f, %lf\n", initialx, pos1.x, GetTime());
+            // printf("Initialx : %f, dragx: %f, %lf\n", initialx, pos1.x, GetTime());
             face->Box.x += pos1.x - initialx;
             face->Box.y += pos1.y - initialy;
             initialx = pos1.x;
@@ -651,18 +676,26 @@ int main(void)
             // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
             // now framecounttoshow 10 can be changed and we will keep updating the texture with it untill we get right FPS
             memcpy(videoState->image.data, videoState->pRGBFrameTemp->data[0], 1080*720*3);
+            cv::Mat opencvMat(720, 1080, CV_8UC3, videoState->image.data);
+            std::vector<cv::Point2f> features;
+            cv::cvtColor(opencvMat, opencvMat, cv::COLOR_RGB2GRAY);
+            cv::goodFeaturesToTrack(opencvMat, features, 30, 0.01, 10);
+            UpdateTexture(videoState->texture,opencvMat.data);
             for (int i = 0; i<MAX_NUMBER_FACES; i++)
             {
                 float x = ((videoState->face[i].Box.x - 500)/500)*1080;
                 float y = (videoState->face[i].Box.y/500)*720;
                 float w = (videoState->face[i].Box.width/500)*1080;
                 float h = (videoState->face[i].Box.height/500)*720;
+                // ImageCrop(&videoState->image, (Rectangle){x,y,w,h}); 
                 videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
                 ImageBlurGaussian(&videoState->tempImage,15);
                 ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
+                UnloadImage(videoState->tempImage); //big memory leak :p... for now. In the future we should
+                // mofidy this blurring pipeline
 
             }
-            UpdateTexture(videoState->texture,videoState->image.data);
+            // UpdateTexture(videoState->texture,videoState->image.data);
             //This needs to be here ?? well this is actually the end of the use of the pointer
             //Not if we are using the gap-1
             // if(videoState->currFrameTime == 0)__sync_add_and_fetch(&videoState->frameCountShow,1);
@@ -685,25 +718,29 @@ int main(void)
                 DrawText(TextFormat("Real FPS: %f / %d", (float)videoState->frameCountShow/videoState->currRealTime, videoState->FPS), 0, 0, 20, WHITE);
                 DrawText(TextFormat("Max Curr FPS: %lf / %d", 1/videoState->TimePerFrame, videoState->FPS), 0, 20, 20, WHITE);
                 DrawText(TextFormat("TOTAL FRAMES: %lld",videoState->frameCountDraw), SCREEN_WIDTH-215, 40, 20, WHITE);
+                if (GuiButton((Rectangle){ 0, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PAUSE, ""))) videoState->stop = true;
+                if (GuiButton((Rectangle){ 20, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PLAY, ""))) Pause(videoState);
+                GuiToggle((Rectangle){ 40, 280, 20, 20 }, GuiIconText(ICON_DEMON, ""),&activeBlur);
+                if (activeBlur)
+                {
+                    videoState->Blurring = true;
+                }
+                else
+                {   
+                    videoState->Blurring = false;
+                }
+                if (GuiButton((Rectangle){ 20, 300, 20, 20 }, GuiIconText(ICON_ARROW_RIGHT, ""))) SpeedLogic(videoState, 1);
+                if (GuiButton((Rectangle){ 0, 300, 20, 20 }, GuiIconText(ICON_ARROW_LEFT, ""))) SpeedLogic(videoState, -1);
             }
+
             DrawFPS(0,40);
             if (fileDialogState.windowActive) GuiLock();
-
             if (GuiButton((Rectangle){ 0, 0, 140, 30 }, GuiIconText(ICON_FILE_OPEN, "Open Image"))) fileDialogState.windowActive = true;
-            if (GuiButton((Rectangle){ 0, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PAUSE, ""))) videoState->stop = true;
-            if (GuiButton((Rectangle){ 20, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PLAY, ""))) Pause(videoState);
-            GuiToggle((Rectangle){ 40, 280, 20, 20 }, GuiIconText(ICON_DEMON, ""),&active);
-            if (active)
-            {
-                videoState->Blurring = true;
-            }
-            else
-            {   
-                videoState->Blurring = false;
-
-            }
-            if (GuiButton((Rectangle){ 20, 300, 20, 20 }, GuiIconText(ICON_ARROW_RIGHT, ""))) SpeedLogic(videoState, 1);
-            if (GuiButton((Rectangle){ 0, 300, 20, 20 }, GuiIconText(ICON_ARROW_LEFT, ""))) SpeedLogic(videoState, -1);
+            // GuiToggle((Rectangle){ 40, 300, 20, 20 }, GuiIconText(ICON_CURSOR_CLASSIC, ""),&activeSelect);
+            // if (activeSelect)
+            // {
+            //     videoState->Blurring = false;
+            // }
 
             GuiUnlock();
             // GUI: Dialog Window

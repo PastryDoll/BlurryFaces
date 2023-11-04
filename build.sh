@@ -1,4 +1,4 @@
-# #!/bin/sh
+# !/bin/sh
 
 # set -xe
 
@@ -7,7 +7,7 @@ FLAGS="-g -std=c++11 -O3 -Wall -Wno-deprecated-declarations -Wno-unused-but-set-
 FRAMEWORKS="-framework CoreVideo -framework IOKit -framework Cocoa 
 -framework GLUT -framework OpenGL"
 
-LIBS="-lavformat -lavcodec -lavutil -lswscale ../raylibtest/lib/libraylib.a"
+LIBS="-lopencv_core -lopencv_imgproc -lavformat -lavcodec -lavutil -lswscale ../raylibtest/lib/libraylib.a"
 
 LIBS_PATHS="-L/opt/homebrew/lib"
 
