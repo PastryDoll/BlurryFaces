@@ -48,6 +48,7 @@ typedef int64_t s64;
 #define VIDEO_WIDTH 500
 #define VIDEO_HEIGHT 500
 #define NUM_THREADS 2
+#define MAX_NUMBER_FACES 10
 
 enum UIState 
 {
@@ -90,7 +91,10 @@ struct VideoState
     Image tempImage;
     Texture texture;
 
-    Face face;
+    Face face[MAX_NUMBER_FACES];
+    bool Incremental;
+    bool Decrement;
+    bool Blurring;
     
     AVFrame *pRGBFrameTemp;
     AVFrame *pRGBFramePrevTemp;
@@ -116,8 +120,6 @@ struct VideoState
     float speed;
     float duration;
     bool stop;
-    bool Incremental;
-    bool Decrement;
     double timebase;
     u32 FPS;
 
@@ -140,6 +142,8 @@ pthread_t threads[NUM_THREADS];
 //We also have to learn how to use in the same way the POSIX lib semaphore
 sem_t pauseSemaphore;
 dispatch_semaphore_t semaphore;
+bool active;
+
 
 void CleanUpVideo(VideoState *VideoState)
 {
@@ -288,7 +292,7 @@ bool selected;
 float initialx;
 float initialy;
 inline
-void Controller(VideoState * videoState, Face *face)
+void Controller(VideoState * videoState)
 {
     static int counter;
     if (IsKeyPressed(KEY_SPACE))
@@ -340,59 +344,77 @@ void Controller(VideoState * videoState, Face *face)
         videoState->Incremental = false;
         videoState->Decrement = true;
     }
-    if (IsKeyPressed(KEY_BACKSPACE))
-    {
-        if(face->selected)
-        {
-            face->Box = (Rectangle){0,0,0,0};
-            face->done = 0;
-            face->selected = 0;
-            face->inside = 0;
 
+
+    currentGesture = GetGestureDetected();
+
+
+    for (int i = 0; i < MAX_NUMBER_FACES; i++)
+    {
+        Face *face = videoState->face + i;
+
+        if (IsKeyPressed(KEY_BACKSPACE))
+        {
+            if(face->selected)
+            {
+                face->Box = (Rectangle){0,0,0,0};
+                face->done = 0;
+                face->selected = 0;
+                face->inside = 0;
+
+            }
+        }
+
+        face->inside = (CheckCollisionPointRec((Vector2){(float)GetMouseX(),(float)GetMouseY()},(Rectangle){face->Box.x,face->Box.y,face->Box.width,face->Box.height}) && (face->done));
+
+        if (i > 0)
+        {
+            if ((!videoState->face[i-1].done) && (!videoState->face[i-1].inside)) break;
+        }
+
+        if (active)
+        {
+            // Start drawing box
+            if ((currentGesture & (GESTURE_TAP|GESTURE_HOLD)) && !face->done && !face->inside)
+            {
+                face->Box.x = GetMouseX();
+                face->Box.y = GetMouseY();
+                face->Box.width = 0;
+                face->Box.height = 0;
+            }
+            //Drag for size
+            if ((currentGesture == GESTURE_DRAG) && !face->done && !face->inside)
+            {   
+                face->Box.width = GetMouseX() - face->Box.x;
+                face->Box.height = GetMouseY() - face->Box.y;
+
+            }
+        }
+        //Ended Drawing box
+        if (face->Box.width > 0 && currentGesture == GESTURE_NONE)
+        {
+            // printf("done\n");
+            face->done = true;
+        } 
+        if ((currentGesture & (GESTURE_TAP)) && (face->inside))
+        {
+            Vector2 pos = GetMousePosition();
+            initialx = pos.x;
+            initialy = pos.y;
+            face->selected = true;
+        }
+        
+        if ((currentGesture & (GESTURE_DRAG)) && (face->inside))
+        {
+            Vector2 pos1 = GetMousePosition();
+            printf("Initialx : %f, dragx: %f, %lf\n", initialx, pos1.x, GetTime());
+            face->Box.x += pos1.x - initialx;
+            face->Box.y += pos1.y - initialy;
+            initialx = pos1.x;
+            initialy = pos1.y;
         }
     }
 
-    currentGesture = GetGestureDetected();
-    face->inside = (CheckCollisionPointRec((Vector2){(float)GetMouseX(),(float)GetMouseY()},(Rectangle){face->Box.x,face->Box.y,face->Box.width,face->Box.height}) && (face->done));
-
-    // Start drawing box
-    if ((currentGesture & (GESTURE_TAP|GESTURE_HOLD)) && !face->done && !face->inside)
-    {
-        face->Box.x = GetMouseX();
-        face->Box.y = GetMouseY();
-        face->Box.width = 0;
-        face->Box.height = 0;
-    }
-    //Drag for size
-    if ((currentGesture == GESTURE_DRAG) && !face->done && !face->inside)
-    {   
-        face->Box.width = GetMouseX() - face->Box.x;
-        face->Box.height = GetMouseY() - face->Box.y;
-
-    }
-    //Ended Drawing box
-    if (face->Box.width > 0 && currentGesture == GESTURE_NONE)
-    {
-        // printf("done\n");
-        face->done = true;
-    } 
-    if ((currentGesture & (GESTURE_TAP)) && (face->inside))
-    {
-        Vector2 pos = GetMousePosition();
-        initialx = pos.x;
-        initialy = pos.y;
-        face->selected = true;
-    }
-    
-    if ((currentGesture & (GESTURE_DRAG)) && (face->inside))
-    {
-        Vector2 pos1 = GetMousePosition();
-        printf("Initialx : %f, dragx: %f, %lf\n", initialx, pos1.x, GetTime());
-        face->Box.x += pos1.x - initialx;
-        face->Box.y += pos1.y - initialy;
-        initialx = pos1.x;
-        initialy = pos1.y;
-    }
 }
 
 void SpeedLogic(VideoState *videoState, s8 direction)
@@ -512,10 +534,11 @@ VideoState *InitializeVideo(const char *path)
     image.height = 720;
     image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
     image.mipmaps = 1;
+    image.data = (u_int8_t*)malloc(1080*720*3);
+
 
     Image tempImage = {0};
 
-    Face face = {{0,0,0,0},false,false,false};
     VideoState *videoState = (VideoState*)malloc(sizeof(VideoState));
     videoState->frameCountDraw = 0;
     videoState->frameCountShow = 0;
@@ -528,7 +551,11 @@ VideoState *InitializeVideo(const char *path)
     videoState->pRGBFrame = pRGBFrame;
     videoState->TimePerFrame = 1/(float)FPS;
     videoState->tempImage = tempImage;
-    videoState->face = face;
+    for (int i = 0; i < MAX_NUMBER_FACES; i++)
+    {
+        videoState->face[i] = {{0,0,0,0},false,false,false};
+
+    }
     videoState->texture = texture;
     videoState->pFormatContext = pFormatContext;
     videoState->pVideoCodecCtx = pVideoCodecCtx;
@@ -537,6 +564,7 @@ VideoState *InitializeVideo(const char *path)
     videoState->duration = duration;
     videoState->FPS = FPS;
     videoState->speed = 1;
+    videoState->Blurring = false;
     // videoState->SemaphoreHandle = semaphore;
     
     if (pthread_create(&threads[0], NULL, DoDecoding, videoState) != 0)
@@ -565,6 +593,9 @@ int main(void)
     
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
+        // int CurrScreenHeight = GetScreenHeight();
+        // int CurrScreenWidth = GetScreenWidth();
+        
         if (fileDialogState.SelectFilePressed)
         {
             if (IsFileExtension(fileDialogState.fileNameText, ".mp4") ||
@@ -598,7 +629,7 @@ int main(void)
            
             // printf("Frame Draw: %llu,Frame Show: %llu\n", videoState->frameCountDraw, videoState->frameCountShow);
             // printf("----\n");
-            Controller(videoState, &videoState->face);
+            Controller(videoState);
             float currTime = GetFrameTime();
             videoState->currFrameTime += currTime; 
 
@@ -612,7 +643,6 @@ int main(void)
                     {
                         videoState->currFrameTime = 0;
                         videoState->pRGBFrameTemp = GetFrame(videoState);
-
                     }
                 }
             }
@@ -620,39 +650,35 @@ int main(void)
             // What happens is that when we update the texture we can be using previous frame...
             // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
             // now framecounttoshow 10 can be changed and we will keep updating the texture with it untill we get right FPS
-            if (videoState->face.Box.width > 0 && videoState->face.Box.height > 0)
+            memcpy(videoState->image.data, videoState->pRGBFrameTemp->data[0], 1080*720*3);
+            for (int i = 0; i<MAX_NUMBER_FACES; i++)
             {
-                // if (videoState->stop)
-                // {
-                av_frame_copy(videoState->pRGBFrame, videoState->pRGBFrameTemp);
-                videoState->image.data = videoState->pRGBFrame->data[0];
-                // }
-                // else videoState->image.data = videoState->pRGBFrameTemp->data[0];
-                float x = ((videoState->face.Box.x - 500)/500)*1080;
-                float y = (videoState->face.Box.y/500)*720;
-                float w = (videoState->face.Box.width/500)*1080;
-                float h = (videoState->face.Box.height/500)*720;
+                float x = ((videoState->face[i].Box.x - 500)/500)*1080;
+                float y = (videoState->face[i].Box.y/500)*720;
+                float w = (videoState->face[i].Box.width/500)*1080;
+                float h = (videoState->face[i].Box.height/500)*720;
                 videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
                 ImageBlurGaussian(&videoState->tempImage,15);
                 ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
-                UpdateTexture(videoState->texture,videoState->image.data);
+
             }
-            else
-            {
-                UpdateTexture(videoState->texture,videoState->pRGBFrameTemp->data[0]);
-            }
+            UpdateTexture(videoState->texture,videoState->image.data);
             //This needs to be here ?? well this is actually the end of the use of the pointer
             //Not if we are using the gap-1
             // if(videoState->currFrameTime == 0)__sync_add_and_fetch(&videoState->frameCountShow,1);
 
         }
         BeginDrawing(); 
-            ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
+            // ClearBackground(CLITERAL(Color){ 59, 0, 161, 255 });
+            ClearBackground(BLACK);
             if (UIstate)
             {
                 DrawTexturePro(videoState->texture, (Rectangle){0, 0, (float)videoState->texture.width, (float)videoState->texture.height},
-                        (Rectangle){500, 0, VIDEO_WIDTH, VIDEO_HEIGHT}, (Vector2){0, 0}, 0, WHITE);
-                DrawRectangleRoundedLines(videoState->face.Box, 2, 2, 2, videoState->face.selected ? GREEN : RED);
+                        (Rectangle){500, 0, 500,500}, (Vector2){0, 0}, 0, WHITE);
+                for (int i = 0; i<MAX_NUMBER_FACES; i++)
+                {
+                    DrawRectangleRoundedLines(videoState->face[i].Box, 2, 2, 2, videoState->face[i].selected ? GREEN : RED);
+                }
                 Slider(videoState);
                 DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, videoState->duration), SCREEN_WIDTH-200, 0, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState->currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
@@ -664,10 +690,20 @@ int main(void)
             if (fileDialogState.windowActive) GuiLock();
 
             if (GuiButton((Rectangle){ 0, 0, 140, 30 }, GuiIconText(ICON_FILE_OPEN, "Open Image"))) fileDialogState.windowActive = true;
-            if (GuiButton((Rectangle){ 140, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PAUSE, ""))) videoState->stop = true;
-            if (GuiButton((Rectangle){ 120, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PLAY, ""))) Pause(videoState);
-            if (GuiButton((Rectangle){ 140, 300, 140, 30 }, GuiIconText(ICON_ARROW_RIGHT, "Speed Up"))) SpeedLogic(videoState, 1);
-            if (GuiButton((Rectangle){ 0, 300, 140, 30 }, GuiIconText(ICON_ARROW_LEFT, "Slow Down"))) SpeedLogic(videoState, -1);
+            if (GuiButton((Rectangle){ 0, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PAUSE, ""))) videoState->stop = true;
+            if (GuiButton((Rectangle){ 20, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PLAY, ""))) Pause(videoState);
+            GuiToggle((Rectangle){ 40, 280, 20, 20 }, GuiIconText(ICON_DEMON, ""),&active);
+            if (active)
+            {
+                videoState->Blurring = true;
+            }
+            else
+            {   
+                videoState->Blurring = false;
+
+            }
+            if (GuiButton((Rectangle){ 20, 300, 20, 20 }, GuiIconText(ICON_ARROW_RIGHT, ""))) SpeedLogic(videoState, 1);
+            if (GuiButton((Rectangle){ 0, 300, 20, 20 }, GuiIconText(ICON_ARROW_LEFT, ""))) SpeedLogic(videoState, -1);
 
             GuiUnlock();
             // GUI: Dialog Window
