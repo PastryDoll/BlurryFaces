@@ -9,7 +9,6 @@
 #include <pthread.h>
 #include <opencv2/opencv.hpp>
 #include <semaphore.h>
-#include <stdlib.h>
 #include <dispatch/dispatch.h>
 
 
@@ -49,6 +48,8 @@ typedef int64_t s64;
 #define VIDEO_HEIGHT 500
 #define NUM_THREADS 2
 #define MAX_NUMBER_FACES 10
+#define TARGET_WIDTH 640
+#define TARGET_HEIGHT 480
 
 enum UIState 
 {
@@ -101,10 +102,11 @@ struct VideoState
     AVFrame *pRGBFrame;
     
 
-    s32 videoStreamIndex;
     AVFormatContext *pFormatContext;
     AVCodecContext *pVideoCodecCtx;
     AVPacket *pPacket;
+    s32 videoStreamIndex;
+
 
     float TimePerFrame;
     u64 volatile frameCountDraw;
@@ -119,9 +121,10 @@ struct VideoState
 
     float speed;
     float duration;
-    bool stop;
+    bool volatile stop;
     double timebase;
     u32 FPS;
+    bool move;
 
     dispatch_semaphore_t SemaphoreHandle;
 
@@ -142,6 +145,8 @@ pthread_t threads[NUM_THREADS];
 //We also have to learn how to use in the same way the POSIX lib semaphore
 sem_t pauseSemaphore;
 dispatch_semaphore_t semaphore;
+dispatch_semaphore_t semaphore1;
+dispatch_semaphore_t semaphore2;
 bool activeBlur;
 bool activeSelect;
 
@@ -155,6 +160,10 @@ void CleanUpVideo(VideoState *VideoState)
     printf("2\n");
     dispatch_semaphore_signal(semaphore);
     printf("3\n");
+    dispatch_semaphore_signal(semaphore1);
+    printf("32\n");
+    dispatch_semaphore_signal(semaphore2);
+    printf("33\n");
     pthread_join(threads[0], NULL);
     printf("4\n");
     pthread_join(threads[1], NULL);
@@ -163,7 +172,7 @@ void CleanUpVideo(VideoState *VideoState)
     printf("6\n");
     UnloadImage(VideoState->image);
     printf("7\n");
-    UnloadImage(VideoState->tempImage);
+    // if (&VideoState->tempImage != NULL) UnloadImage(VideoState->tempImage);
     printf("8\n");
     UnloadTexture(VideoState->texture);
     printf("9\n");
@@ -197,6 +206,18 @@ void* DoDecoding(void* arg)
         
         //TODO maybe do an atomic load of videoState->stop;
         if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+        // if (videoState->move)
+        // {
+        //     FrameNextEntryToFill = 0;
+        //     videoState->frameCountShow = 0;
+        //     videoState->frameCountDraw = 0;
+        //     videoState->blah = 0;
+        //     videoState->move = false;
+        //     int64_t targetTimestamp = 25 * videoState->pFormatContext->streams[videoState->videoStreamIndex]->time_base.den / videoState->pFormatContext->streams[videoState->videoStreamIndex]->time_base.num;
+        //     printf("TimeStamp: %lld\n",targetTimestamp);
+        //     av_seek_frame(videoState->pFormatContext, videoState->videoStreamIndex, targetTimestamp, AVSEEK_FLAG_BACKWARD);
+        //     dispatch_semaphore_signal(semaphore2);
+        // }
         // printf("alive1\n");
         assert(FrameNextEntryToFill >= videoState->frameCountDraw);
         if ((FrameNextEntryToFill - videoState->frameCountDraw < gap))
@@ -210,13 +231,17 @@ void* DoDecoding(void* arg)
                     avcodec_send_packet(videoState->pVideoCodecCtx, videoState->pPacket);
                     avcodec_receive_frame(videoState->pVideoCodecCtx, pFrame->Frame);
                     av_packet_unref(videoState->pPacket);
-                    printf("NextEntryToFill: %u, videoState->frameCountDraw: %llu\n" , FrameNextEntryToFill%gap,videoState->frameCountDraw%gap);
+                    // printf("NextEntryToFill: %u, videoState->frameCountDraw: %llu\n" , FrameNextEntryToFill%gap,videoState->frameCountDraw%gap);
                     __sync_add_and_fetch(&FrameNextEntryToFill, 1);
             }
         }
         else
         {
-            // printf("waste of cpu 1\n");
+            if (videoState->frameCountDraw > 1)
+            {
+                // printf("waste of cpu pause 1\n");
+                dispatch_semaphore_wait(semaphore1, DISPATCH_TIME_FOREVER);
+            }
         }
     }
     pthread_exit(NULL);
@@ -226,11 +251,12 @@ void* UpdateFrame(void* arg)
 {
     VideoState *videoState = (VideoState *)arg;
 
+
     while (DecodingThread)
     {
         //TODO maybe do an atomic load of videoState->stop;
-        if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
         // printf("alive2 %lf\n", GetTime());
+        if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
         int32_t OriginalFrameCountDraw = videoState->frameCountDraw;
 
         assert(videoState->frameCountDraw >= videoState->frameCountShow);
@@ -245,15 +271,17 @@ void* UpdateFrame(void* arg)
             {   
 
                 int32_t InitialValue = __sync_val_compare_and_swap(&videoState->frameCountDraw, OriginalFrameCountDraw, OriginalFrameCountDraw+1);
+                dispatch_semaphore_signal(semaphore1);
 
                 if (InitialValue == OriginalFrameCountDraw) //If the original is what we thought it should be
                 {
                     frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountDraw-1)%gap;
                     sws_scale(videoState->sws_ctx, FramePtr->Frame->data, FramePtr->Frame->linesize, 0,
                                 FramePtr->Frame->height, FramePtr->pRGBFrame->data, FramePtr->pRGBFrame->linesize);
+                    FramePtr->pRGBFrame->pts = FramePtr->Frame->pts;
                     __sync_add_and_fetch(&videoState->blah,1);
-                    // printf("frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",videoState->frameCountShow,videoState->blah,(videoState->frameCountDraw-1));
-                    // printf("frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",videoState->frameCountShow%gap,videoState->blah%gap,(videoState->frameCountDraw-1)%gap);
+                    // printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n", FrameNextEntryToFill, videoState->frameCountShow,videoState->blah,(videoState->frameCountDraw-1));
+                    // printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",FrameNextEntryToFill%gap, videoState->frameCountShow%gap,videoState->blah%gap,(videoState->frameCountDraw-1)%gap);
                     
                 }
             }
@@ -261,6 +289,7 @@ void* UpdateFrame(void* arg)
         else
         {
             // printf("waste of cpu 2\n");
+            dispatch_semaphore_wait(semaphore2, DISPATCH_TIME_FOREVER);
         }
     }
     pthread_exit(NULL);
@@ -271,8 +300,9 @@ AVFrame *GetFrame(VideoState *videoState)
 {
     assert(videoState->frameCountShow < videoState->blah);
     frame_work_queue_entry* FramePtr = FrameQueue + (videoState->frameCountShow)%gap;
-    videoState->currVideoTime = (double)FramePtr->Frame->pts*videoState->timebase;
+    videoState->currVideoTime = (double)FramePtr->pRGBFrame->pts*videoState->timebase;
     __sync_add_and_fetch(&videoState->frameCountShow,1);
+    dispatch_semaphore_signal(semaphore2);
     return FramePtr->pRGBFrame;
 }
 
@@ -284,6 +314,8 @@ void Pause(VideoState *videoState)
     {
         dispatch_semaphore_signal(semaphore);
         dispatch_semaphore_signal(semaphore);
+        // dispatch_semaphore_signal(semaphore1);
+        // dispatch_semaphore_signal(semaphore2);
     }
     printf("Pause: %i\n", videoState->stop);
 }
@@ -455,7 +487,7 @@ void SpeedLogic(VideoState *videoState, s8 direction)
 
         case 1:
         {
-            videoState->speed = (videoState->speed < (float)1/2) ? (float)1/4 : videoState->speed/2;
+            videoState->speed = (videoState->speed < (float)1/4) ? (float)1/16 : videoState->speed/2;
         }
         break;
     }
@@ -465,11 +497,22 @@ void SpeedLogic(VideoState *videoState, s8 direction)
 
 void Slider(VideoState *VideoState)
 {
-    int heigth = 100;
-    int lenght = 500;
+    float heigth = 100;
+    float lenght = 500;
     float posSlider = VideoState->currVideoTime*((float)lenght/VideoState->duration);
-    DrawRectangle(0,(int)(SCREEN_HEIGHT - heigth),lenght, heigth, CLITERAL(Color){ 64, 64, 64, 50});
+    Vector2 mousePos = GetMousePosition();
+    Rectangle sliderArea = {0,(float)(SCREEN_HEIGHT - heigth),lenght, heigth};
+    DrawRectangleRec(sliderArea,(Color){ 64, 64, 64, 50});
     DrawLineEx((Vector2){posSlider,(float)SCREEN_HEIGHT},(Vector2){posSlider,(float)(SCREEN_HEIGHT - heigth)},2,RED);
+    // printf("PosSlider: %f, CurrVideoTime: %f, PTS: %\n", posSlider, VideoState->currVideoTime);
+    if(CheckCollisionPointRec(mousePos,sliderArea))
+    {
+        char posString[32]; // Buffer to hold the position as a string
+        snprintf(posString, sizeof(posString), "%.2f",  mousePos.x*VideoState->duration/lenght);
+        DrawText(posString, mousePos.x + 5, mousePos.y-15, 1, WHITE);       // Draw text (using default font)
+        DrawRectangleRec((Rectangle){mousePos.x,mousePos.y-20,100,20},(Color){ 255, 255, 255, 50});
+        if ( GetGestureDetected() == GESTURE_TAP) VideoState->move = true;
+    }
 }
 
 VideoState *InitializeVideo(const char *path)
@@ -519,47 +562,47 @@ VideoState *InitializeVideo(const char *path)
 
     struct SwsContext *sws_ctx         = sws_alloc_context();
     sws_ctx = sws_getContext(VideoWidth, VideoHeight, pVideoCodecCtx->pix_fmt,
-                             1080, 720, AV_PIX_FMT_RGB24,
+                             TARGET_WIDTH, TARGET_HEIGHT, AV_PIX_FMT_RGB24,
                              SWS_FAST_BILINEAR, 0, 0, 0);
 
     // Allocate buffer for RGB data
     AVFrame *pRGBFrame = av_frame_alloc();
     pRGBFrame->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
-    pRGBFrame->width  = 1080;
-    pRGBFrame->height = 720;
-    pRGBFrame->linesize[0] = 1080 * 3;
+    pRGBFrame->width  = TARGET_WIDTH;
+    pRGBFrame->height = TARGET_HEIGHT;
+    pRGBFrame->linesize[0] = TARGET_WIDTH * 3;
     av_frame_get_buffer(pRGBFrame, 0);
     AVFrame *pRGBFrameTemp = av_frame_alloc();
     pRGBFrameTemp->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
-    pRGBFrameTemp->width  = 1080;
-    pRGBFrameTemp->height = 720;
-    pRGBFrameTemp->linesize[0] = 1080 * 3;
+    pRGBFrameTemp->width  = TARGET_WIDTH;
+    pRGBFrameTemp->height = TARGET_HEIGHT;
+    pRGBFrameTemp->linesize[0] = TARGET_WIDTH * 3;
     av_frame_get_buffer(pRGBFrameTemp, 0);
 
     for (u32 i = 0; i < gap; i++)
     {
         AVFrame *pRGBFrame = av_frame_alloc();
         pRGBFrame->format = AV_PIX_FMT_RGB24; //RGB24 is 8 bits per channel (8*3)
-        pRGBFrame->width  = 1080;
-        pRGBFrame->height = 720;
-        pRGBFrame->linesize[0] = 1080 * 3;
+        pRGBFrame->width  = TARGET_WIDTH;
+        pRGBFrame->height = TARGET_HEIGHT;
+        pRGBFrame->linesize[0] = TARGET_WIDTH * 3;
         av_frame_get_buffer(pRGBFrame, 0);
         FrameQueue[i].pRGBFrame = pRGBFrame;
     }
 
     Texture texture = {0};
-    texture.width   = 1080;
-    texture.height  = 720;
+    texture.width   = TARGET_WIDTH;
+    texture.height  = TARGET_HEIGHT;
     texture.format  = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
     texture.mipmaps = 1;
     texture.id = rlLoadTexture(NULL, texture.width, texture.height, texture.format, texture.mipmaps);
 
     Image image = {0};
-    image.width = 1080;
-    image.height = 720;
+    image.width = TARGET_WIDTH;
+    image.height = TARGET_HEIGHT;
     image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
     image.mipmaps = 1;
-    image.data = (u_int8_t*)malloc(1080*720*3);
+    image.data = (u_int8_t*)malloc(TARGET_WIDTH*TARGET_HEIGHT*3);
 
 
     Image tempImage = {0};
@@ -590,6 +633,8 @@ VideoState *InitializeVideo(const char *path)
     videoState->FPS = FPS;
     videoState->speed = 1;
     videoState->Blurring = false;
+    videoState->videoStreamIndex = videoStreamIndex;
+    videoState->move = false;
     // videoState->SemaphoreHandle = semaphore;
     
     if (pthread_create(&threads[0], NULL, DoDecoding, videoState) != 0)
@@ -603,14 +648,23 @@ VideoState *InitializeVideo(const char *path)
         return NULL;
     }
     return videoState;
+
+    // if (pthread_create(&threads[2], NULL, UpdateFrame, videoState) != 0)
+    // {
+    //     perror("pthread_create");
+    //     return NULL;
+    // }
+    // return videoState;
 }
 
 int main(void)
 {   
     semaphore = dispatch_semaphore_create(0);
+    semaphore1 = dispatch_semaphore_create(0);
+    semaphore2 = dispatch_semaphore_create(0);
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "BlurryFaces");
-
+    SetTargetFPS(120);
     GuiWindowFileDialogState fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
     char fileNameToLoad[512] = {0};
     VideoState *videoState;
@@ -633,6 +687,12 @@ int main(void)
                 } 
                 strcpy(fileNameToLoad, TextFormat("%s" PATH_SEPERATOR "%s", fileDialogState.dirPathText, fileDialogState.fileNameText));
                 videoState = InitializeVideo(fileNameToLoad);
+
+                int64_t totalFrames = (videoState->pFormatContext->streams[videoState->videoStreamIndex]->duration * videoState->pFormatContext->streams[videoState->videoStreamIndex]->time_base.den) / (videoState->pFormatContext->streams[videoState->videoStreamIndex]->time_base.num);
+                printf("Total Frames: %lld\n", totalFrames);
+
+
+
                 printf("%s %s\n",fileDialogState.dirPathText,fileDialogState.fileNameText);
                 UIstate = VIDEOSELECTED;
                 fileDialogState.SelectFilePressed = false;
@@ -644,8 +704,8 @@ int main(void)
                         videoState->pRGBFrameTemp = GetFrame(videoState);
                         getFirst = false;
                     }
-                    videoState->stop = true;
                 }
+                videoState->stop = true;
             }
         }
 
@@ -675,18 +735,18 @@ int main(void)
             // What happens is that when we update the texture we can be using previous frame...
             // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
             // now framecounttoshow 10 can be changed and we will keep updating the texture with it untill we get right FPS
-            memcpy(videoState->image.data, videoState->pRGBFrameTemp->data[0], 1080*720*3);
-            cv::Mat opencvMat(720, 1080, CV_8UC3, videoState->image.data);
-            std::vector<cv::Point2f> features;
-            cv::cvtColor(opencvMat, opencvMat, cv::COLOR_RGB2GRAY);
-            cv::goodFeaturesToTrack(opencvMat, features, 30, 0.01, 10);
-            UpdateTexture(videoState->texture,opencvMat.data);
+            memcpy(videoState->image.data, videoState->pRGBFrameTemp->data[0], TARGET_WIDTH*TARGET_HEIGHT*3);
+            // cv::Mat opencvMat(TARGET_HEIGHT, TARGET_WIDTH, CV_8UC3, videoState->image.data);
+            // std::vector<cv::Point2f> features;
+            // cv::cvtColor(opencvMat, opencvMat, cv::COLOR_RGB2GRAY);
+            // cv::goodFeaturesToTrack(opencvMat, features, 30, 0.01, 10);
+            // UpdateTexture(videoState->texture,opencvMat.data);
             for (int i = 0; i<MAX_NUMBER_FACES; i++)
             {
-                float x = ((videoState->face[i].Box.x - 500)/500)*1080;
-                float y = (videoState->face[i].Box.y/500)*720;
-                float w = (videoState->face[i].Box.width/500)*1080;
-                float h = (videoState->face[i].Box.height/500)*720;
+                float x = ((videoState->face[i].Box.x - 500)/500)*TARGET_WIDTH;
+                float y = (videoState->face[i].Box.y/500)*TARGET_HEIGHT;
+                float w = (videoState->face[i].Box.width/500)*TARGET_WIDTH;
+                float h = (videoState->face[i].Box.height/500)*TARGET_HEIGHT;
                 // ImageCrop(&videoState->image, (Rectangle){x,y,w,h}); 
                 videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
                 ImageBlurGaussian(&videoState->tempImage,15);
@@ -695,7 +755,7 @@ int main(void)
                 // mofidy this blurring pipeline
 
             }
-            // UpdateTexture(videoState->texture,videoState->image.data);
+            UpdateTexture(videoState->texture,videoState->image.data);
             //This needs to be here ?? well this is actually the end of the use of the pointer
             //Not if we are using the gap-1
             // if(videoState->currFrameTime == 0)__sync_add_and_fetch(&videoState->frameCountShow,1);
@@ -713,9 +773,9 @@ int main(void)
                     DrawRectangleRoundedLines(videoState->face[i].Box, 2, 2, 2, videoState->face[i].selected ? GREEN : RED);
                 }
                 Slider(videoState);
-                DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, videoState->duration), SCREEN_WIDTH-200, 0, 20, WHITE);
+                DrawText(TextFormat("Time: %.2lf / %.2f", videoState->currVideoTime, videoState->duration), SCREEN_WIDTH-200, 100, 20, WHITE);
                 DrawText(TextFormat("Real Time: %.2f", videoState->currRealTime), SCREEN_WIDTH-200, 80, 20, WHITE);
-                DrawText(TextFormat("Real FPS: %f / %d", (float)videoState->frameCountShow/videoState->currRealTime, videoState->FPS), 0, 0, 20, WHITE);
+                DrawText(TextFormat("Real FPS: %f / %d", (float)videoState->frameCountShow/videoState->currRealTime, videoState->FPS), 0, 150, 20, WHITE);
                 DrawText(TextFormat("Max Curr FPS: %lf / %d", 1/videoState->TimePerFrame, videoState->FPS), 0, 20, 20, WHITE);
                 DrawText(TextFormat("TOTAL FRAMES: %lld",videoState->frameCountDraw), SCREEN_WIDTH-215, 40, 20, WHITE);
                 if (GuiButton((Rectangle){ 0, 280, 20, 20 }, GuiIconText(ICON_PLAYER_PAUSE, ""))) videoState->stop = true;
@@ -754,6 +814,8 @@ int main(void)
     DecodingThread = false;
     dispatch_semaphore_signal(semaphore);
     dispatch_semaphore_signal(semaphore);
+    dispatch_semaphore_signal(semaphore1);
+    dispatch_semaphore_signal(semaphore2);
     pthread_join(threads[0], NULL);
     pthread_join(threads[1], NULL);
     printf("Decoding Thread Closed\n");
