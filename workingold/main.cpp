@@ -2,7 +2,6 @@
 #include "math.h"
 #include <stdio.h>
 #include <stdint.h>
-#include <string.h>
 #include <stdlib.h>         // Required for: malloc() and free()
 #include <time.h>
 #include <unistd.h>
@@ -11,6 +10,7 @@
 #include <opencv2/opencv.hpp>
 #include <semaphore.h>
 #include <dispatch/dispatch.h>
+
 
 extern "C" {
     #include <libavcodec/avcodec.h>
@@ -201,8 +201,6 @@ void CleanUpVideo(VideoState *VideoState)
 void* DoDecoding(void* arg)
 {      
     VideoState *videoState = (VideoState *)arg;
-    static int coint = 0;
-    bool wait = false;
     while (DecodingThread)
     {
         
@@ -220,28 +218,11 @@ void* DoDecoding(void* arg)
         //     av_seek_frame(videoState->pFormatContext, videoState->videoStreamIndex, targetTimestamp, AVSEEK_FLAG_BACKWARD);
         //     dispatch_semaphore_signal(semaphore2);
         // }
-        // printf("alive1\n");
-        // assert(FrameNextEntryToFill >= videoState->frameCountDraw);
-        // if ((FrameNextEntryToFill - videoState->frameCountDraw < gap))
+        printf("alive1 %lf\n", GetTime());
+        assert(FrameNextEntryToFill >= videoState->frameCountDraw);
+        if ((FrameNextEntryToFill - videoState->frameCountDraw < gap))
         {
-
-            // if (coint > 100)
-            // {
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            //     if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-
-            // }
-            // coint++;
             if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            // if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
-            // if (av_read_frame(videoState->pFormatContext, videoState->pPacket) < 0){break;}
 
             if (videoState->pPacket->stream_index == videoState->videoStreamIndex) 
             {   
@@ -249,31 +230,19 @@ void* DoDecoding(void* arg)
                     
                     avcodec_send_packet(videoState->pVideoCodecCtx, videoState->pPacket);
                     avcodec_receive_frame(videoState->pVideoCodecCtx, pFrame->Frame);
-                    printf(
-                    "Frame %c (%d) pts %d dts %d key_frame %d [coded_picture_number %d, display_picture_number %d]\n",
-                    av_get_picture_type_char( pFrame->Frame->pict_type),
-                    videoState->pVideoCodecCtx->frame_number,
-                     pFrame->Frame->pts,
-                     pFrame->Frame->pkt_dts,
-                     pFrame->Frame->key_frame,
-                     pFrame->Frame->coded_picture_number,
-                     pFrame->Frame->display_picture_number
-                    );
-                    if (strcmp("I", (av_get_picture_type_char(pFrame->Frame->pict_type), 1) !=  0))
-                    printf("Time: %lf\n",(double)pFrame->Frame->pts*videoState->timebase);
                     av_packet_unref(videoState->pPacket);
                     // printf("NextEntryToFill: %u, videoState->frameCountDraw: %llu\n" , FrameNextEntryToFill%gap,videoState->frameCountDraw%gap);
-                    // __sync_add_and_fetch(&FrameNextEntryToFill, 1);
+                    __sync_add_and_fetch(&FrameNextEntryToFill, 1);
             }
         }
-        // else
-        // {
-        //     if (videoState->frameCountDraw > 1)
-        //     {
-        //         // printf("waste of cpu pause 1\n");
-        //         dispatch_semaphore_wait(semaphore1, DISPATCH_TIME_FOREVER);
-        //     }
-        // }
+        else
+        {
+            if (videoState->frameCountDraw > 1)
+            {
+                printf("waste of cpu pause 1\n");
+                dispatch_semaphore_wait(semaphore1, DISPATCH_TIME_FOREVER);
+            }
+        }
     }
     pthread_exit(NULL);
 }
@@ -286,8 +255,8 @@ void* UpdateFrame(void* arg)
     while (DecodingThread)
     {
         //TODO maybe do an atomic load of videoState->stop;
-        // printf("alive2 %lf\n", GetTime());
-        if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+        printf("alive2 %lf\n", GetTime());
+        // if (videoState->stop) dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
         int32_t OriginalFrameCountDraw = videoState->frameCountDraw;
 
         assert(videoState->frameCountDraw >= videoState->frameCountShow);
@@ -311,15 +280,15 @@ void* UpdateFrame(void* arg)
                                 FramePtr->Frame->height, FramePtr->pRGBFrame->data, FramePtr->pRGBFrame->linesize);
                     FramePtr->pRGBFrame->pts = FramePtr->Frame->pts;
                     __sync_add_and_fetch(&videoState->blah,1);
-                    // printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n", FrameNextEntryToFill, videoState->frameCountShow,videoState->blah,(videoState->frameCountDraw-1));
-                    // printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",FrameNextEntryToFill%gap, videoState->frameCountShow%gap,videoState->blah%gap,(videoState->frameCountDraw-1)%gap);
+                    printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n", FrameNextEntryToFill, videoState->frameCountShow,videoState->blah,(videoState->frameCountDraw-1));
+                    printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, frameCountDraw %llu\n",FrameNextEntryToFill%gap, videoState->frameCountShow%gap,videoState->blah%gap,(videoState->frameCountDraw-1)%gap);
                     
                 }
             }
         }
         else
         {
-            // printf("waste of cpu 2\n");
+            printf("waste of cpu 2\n");
             dispatch_semaphore_wait(semaphore2, DISPATCH_TIME_FOREVER);
         }
     }
@@ -673,11 +642,11 @@ VideoState *InitializeVideo(const char *path)
         perror("pthread_create");
         return NULL;
     }
-    // if (pthread_create(&threads[1], NULL, UpdateFrame, videoState) != 0)
-    // {
-    //     perror("pthread_create");
-    //     return NULL;
-    // }
+    if (pthread_create(&threads[1], NULL, UpdateFrame, videoState) != 0)
+    {
+        perror("pthread_create");
+        return NULL;
+    }
     return videoState;
 
     // if (pthread_create(&threads[2], NULL, UpdateFrame, videoState) != 0)
@@ -727,16 +696,16 @@ int main(void)
                 printf("%s %s\n",fileDialogState.dirPathText,fileDialogState.fileNameText);
                 UIstate = VIDEOSELECTED;
                 fileDialogState.SelectFilePressed = false;
-                // bool getFirst = true;
-                // while(getFirst)
-                // {
-                //     if (videoState->frameCountShow < videoState->blah)
-                //     {
-                //         videoState->pRGBFrameTemp = GetFrame(videoState);
-                //         getFirst = false;
-                //     }
-                // }
-                // videoState->stop = true;
+                bool getFirst = true;
+                while(getFirst)
+                {
+                    if (videoState->frameCountShow < videoState->blah)
+                    {
+                        videoState->pRGBFrameTemp = GetFrame(videoState);
+                        getFirst = false;
+                    }
+                }
+                videoState->stop = true;
             }
         }
 
@@ -749,19 +718,19 @@ int main(void)
             float currTime = GetFrameTime();
             videoState->currFrameTime += currTime; 
 
-            // if (!videoState->stop)
-            // {
-            //     videoState->currRealTime += currTime;
+            if (!videoState->stop)
+            {
+                videoState->currRealTime += currTime;
                 
-            //     if (videoState->currFrameTime >= videoState->TimePerFrame*videoState->speed || videoState->frameCountDraw == 0)
-            //     {  
-            //         if (videoState->frameCountShow < videoState->blah)
-            //         {
-            //             videoState->currFrameTime = 0;
-            //             videoState->pRGBFrameTemp = GetFrame(videoState);
-            //         }
-            //     }
-            // }
+                if (videoState->currFrameTime >= videoState->TimePerFrame*videoState->speed || videoState->frameCountDraw == 0)
+                {  
+                    if (videoState->frameCountShow < videoState->blah)
+                    {
+                        videoState->currFrameTime = 0;
+                        videoState->pRGBFrameTemp = GetFrame(videoState);
+                    }
+                }
+            }
             // Okay so this -1 is subtle and we might fix this soon..
             // What happens is that when we update the texture we can be using previous frame...
             // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
@@ -772,20 +741,20 @@ int main(void)
             // cv::cvtColor(opencvMat, opencvMat, cv::COLOR_RGB2GRAY);
             // cv::goodFeaturesToTrack(opencvMat, features, 30, 0.01, 10);
             // UpdateTexture(videoState->texture,opencvMat.data);
-            // for (int i = 0; i<MAX_NUMBER_FACES; i++)
-            // {
-            //     float x = ((videoState->face[i].Box.x - 500)/500)*TARGET_WIDTH;
-            //     float y = (videoState->face[i].Box.y/500)*TARGET_HEIGHT;
-            //     float w = (videoState->face[i].Box.width/500)*TARGET_WIDTH;
-            //     float h = (videoState->face[i].Box.height/500)*TARGET_HEIGHT;
-            //     // ImageCrop(&videoState->image, (Rectangle){x,y,w,h}); 
-            //     videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
-            //     ImageBlurGaussian(&videoState->tempImage,15);
-            //     ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
-            //     UnloadImage(videoState->tempImage); //big memory leak :p... for now. In the future we should
-            //     // mofidy this blurring pipeline
+            for (int i = 0; i<MAX_NUMBER_FACES; i++)
+            {
+                float x = ((videoState->face[i].Box.x - 500)/500)*TARGET_WIDTH;
+                float y = (videoState->face[i].Box.y/500)*TARGET_HEIGHT;
+                float w = (videoState->face[i].Box.width/500)*TARGET_WIDTH;
+                float h = (videoState->face[i].Box.height/500)*TARGET_HEIGHT;
+                // ImageCrop(&videoState->image, (Rectangle){x,y,w,h}); 
+                videoState->tempImage = ImageFromImage(videoState->image, (Rectangle){x,y,w,h});
+                ImageBlurGaussian(&videoState->tempImage,15);
+                ImageDraw(&videoState->image, videoState->tempImage, (Rectangle){0, 0, (float)videoState->tempImage.width, (float)videoState->tempImage.height},(Rectangle){x , y, w, h}, WHITE);
+                UnloadImage(videoState->tempImage); //big memory leak :p... for now. In the future we should
+                // mofidy this blurring pipeline
 
-            // }
+            }
             UpdateTexture(videoState->texture,videoState->image.data);
             //This needs to be here ?? well this is actually the end of the use of the pointer
             //Not if we are using the gap-1
