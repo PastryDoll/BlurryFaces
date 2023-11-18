@@ -5,7 +5,7 @@
 
 static bool volatile Decoding = true;
 
-frame_work_queue_memory *AllocFrameQueue()
+frame_work_queue_memory *InitializeFrameQueueMemory()
 {
     frame_work_queue_memory *FrameQueue = (frame_work_queue_memory *)malloc(RingSize * sizeof(frame_work_queue_memory));
 
@@ -25,6 +25,10 @@ frame_work_queue_memory *AllocFrameQueue()
         pRGBFrame->linesize[0] = TARGET_WIDTH * 3;
         av_frame_get_buffer(pRGBFrame, 0);
         FrameQueue[i].pRGBFrame = pRGBFrame;
+
+        AVFrame *Frame = av_frame_alloc();
+        FrameQueue[i].Frame = Frame;
+    
     }
     return FrameQueue;
 

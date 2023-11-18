@@ -1,4 +1,3 @@
-#include "../externals/raylib/lib/raylib.h"
 #include "rlib_rederer.cpp"
 
 #define SCREEN_WIDTH 1000
@@ -6,15 +5,19 @@
 
 int main(void)
 {   
-    frame_work_queue_memory *FrameQueueMemory = AllocFrameQueue();
-
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "BlurryFaces");
+    
+    frame_work_queue_memory *FrameQueueMemory = InitializeFrameQueueMemory();
+    frames_memory *RlFramesMemory = InitializeFramesMemory();
+
     SetTargetFPS(120);
+    GuiWindowFileDialogState fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
 
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
-        DoRendering(FrameQueueMemory);
+        DoRendering(FrameQueueMemory, RlFramesMemory, &fileDialogState);
+
     }
 
     CloseWindow();                  // Close window and OpenGL context

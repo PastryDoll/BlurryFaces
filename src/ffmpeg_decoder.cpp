@@ -7,7 +7,7 @@
 #define VIDEO_HEIGHT 500
 
 // A very poor and maybe bad idea of circular buffering for 
-// saving memory and maybe some hot memory use
+// saving memory and mayObe some hot memory use
 
 
 //TODO WE NEED TO UNDERSTAND HOW TO RUN CODEC IN MULTITHREAD (THIS IS NATIVE TO FFMPEG)
@@ -38,8 +38,9 @@ void* DoDecoding(void* arg)
             if (VideoDecoder->FrameToConvert > 1)
             {
 #ifdef DEBUG
-
-                printf("waste of cpu pause 1\n");
+                static int a = 0;
+                printf("waste of cpu pause 1 %i\n", a);
+                a++;
 #endif
                 dispatch_semaphore_wait(VideoDecoder->SemaphoreDecoder, DISPATCH_TIME_FOREVER);
             }
@@ -52,7 +53,8 @@ void* DoConvertion(void* arg)
 {
     video_decoder *VideoDecoder = (video_decoder *)arg;
 
-    struct SwsContext *sws_ctx         = sws_alloc_context();
+
+    struct SwsContext *sws_ctx = sws_alloc_context();
     u32 VideoWidth = VideoDecoder->pVideoCodecCtx->width;
     u32 VideoHeight = VideoDecoder->pVideoCodecCtx->height;
     AVPixelFormat PixFmt = VideoDecoder->pVideoCodecCtx->pix_fmt;
@@ -88,9 +90,8 @@ void* DoConvertion(void* arg)
                     __sync_add_and_fetch(&VideoDecoder->FrameToGrab,1);
 
 #ifdef DEBUG
-
-                    printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, FrameToConvert %llu\n", FrameToFill, VideoDecoder->FrameToRender,VideoDecoder->blah,(VideoDecoder->FrameToConvert-1));
-                    printf("FrameNextEntryToFill: %u, frameCountShow: %llu, -blah: %llu, FrameToConvert %llu\n",FrameToFill%RingSize, VideoDecoder->FrameToRender%RingSize,VideoDecoder->blah%RingSize,(VideoDecoder->FrameToConvert-1)%RingSize);
+                    printf("FrameToFill: %llu, FrameToRender: %llu, -FrameToGrab: %llu, FrameToConvert %llu\n", VideoDecoder->FrameToFill, VideoDecoder->FrameToRender,VideoDecoder->FrameToGrab,(VideoDecoder->FrameToConvert-1));
+                    printf("FrameToFill: %llu, FrameToRender: %llu, -FrameToGrab: %llu, FrameToConvert %llu\n",VideoDecoder->FrameToFill%RingSize, VideoDecoder->FrameToRender%RingSize,VideoDecoder->FrameToGrab%RingSize,(VideoDecoder->FrameToConvert-1)%RingSize);
 #endif
 
                 }
@@ -100,10 +101,12 @@ void* DoConvertion(void* arg)
         {
 
 #ifdef DEBUG
-
-            printf("waste of cpu 2\n");
+            static int a = 0;
+            printf("waste of cpu pause 2 %i\n",a);
+            a++;
 #endif
             dispatch_semaphore_wait(VideoDecoder->SemaphoreConvertion, DISPATCH_TIME_FOREVER);
+
         }
     }
     sws_freeContext(sws_ctx);
@@ -111,17 +114,17 @@ void* DoConvertion(void* arg)
 }
 
 inline
-u8 *GetFrame(video_decoder *VideoDecoder, float *CurrVideoTime)
+u8 *GetFrame(video_decoder *VideoDecoder) //, float *CurrVideoTime)
 {
     assert(VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab);
     frame_work_queue_memory* FramePtr = VideoDecoder->FrameQueue + (VideoDecoder->FrameToRender)%RingSize;
-    *CurrVideoTime = (double)FramePtr->pRGBFrame->pts*VideoDecoder->TimeBase;
+    // *CurrVideoTime = (double)FramePtr->pRGBFrame->pts*VideoDecoder->TimeBase;
     __sync_add_and_fetch(&VideoDecoder->FrameToRender,1);
     dispatch_semaphore_signal(VideoDecoder->SemaphoreConvertion);
     return FramePtr->pRGBFrame->data[0];
 }
 
-video_decoder *InitializeVideo(const char *path, thread_manager ThreadManager, frame_work_queue_memory *FrameQueueMemory)
+video_decoder *InitializeVideo(const char *path, frame_work_queue_memory *FrameQueueMemory)
 {
     // Open video file
     AVFormatContext *pFormatContext = avformat_alloc_context(); // = (NULL) ?
@@ -174,13 +177,22 @@ video_decoder *InitializeVideo(const char *path, thread_manager ThreadManager, f
     VideoDecoder->pPacket = av_packet_alloc();
     VideoDecoder->Duration = duration;
     VideoDecoder->Fps = FPS;
+
+    pthread_t DecoderThread = {0};
+    pthread_t ConvertThread = {0};
+
+    VideoDecoder->threads[0] = DecoderThread;
+    VideoDecoder->threads[1] = ConvertThread;
+
+    VideoDecoder->SemaphoreDecoder = dispatch_semaphore_create(0);
+    VideoDecoder->SemaphoreConvertion = dispatch_semaphore_create(0);
     
-    if (pthread_create(&ThreadManager.threads[0], NULL, DoDecoding, VideoDecoder) != 0)
+    if (pthread_create(&VideoDecoder->threads[0], NULL, DoDecoding, VideoDecoder) != 0)
     {
         perror("pthread_create");
         return NULL;
     }
-    if (pthread_create(&ThreadManager.threads[1], NULL, DoConvertion, VideoDecoder) != 0)
+    if (pthread_create(&VideoDecoder->threads[1], NULL, DoConvertion, VideoDecoder) != 0)
     {
         perror("pthread_create");
         return NULL;

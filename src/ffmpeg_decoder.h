@@ -19,8 +19,8 @@ struct thread_manager
 
 struct frame_work_queue_memory //We need to free this
 {
-    AVFrame *Frame = av_frame_alloc();
-    AVFrame *pRGBFrame = av_frame_alloc();
+    AVFrame *Frame;
+    AVFrame *pRGBFrame;
 
 };
 
