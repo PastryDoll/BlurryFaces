@@ -114,11 +114,11 @@ void* DoConvertion(void* arg)
 }
 
 inline
-u8 *GetFrame(video_decoder *VideoDecoder) //, float *CurrVideoTime)
+u8 *GetFrame(video_decoder *VideoDecoder, double *CurrVideoTime)
 {
     assert(VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab);
     frame_work_queue_memory* FramePtr = VideoDecoder->FrameQueue + (VideoDecoder->FrameToRender)%RingSize;
-    // *CurrVideoTime = (double)FramePtr->pRGBFrame->pts*VideoDecoder->TimeBase;
+    *CurrVideoTime = (double)FramePtr->pRGBFrame->pts*VideoDecoder->TimeBase;
     __sync_add_and_fetch(&VideoDecoder->FrameToRender,1);
     dispatch_semaphore_signal(VideoDecoder->SemaphoreConvertion);
     return FramePtr->pRGBFrame->data[0];

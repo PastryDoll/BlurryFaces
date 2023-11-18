@@ -17,9 +17,11 @@ char fileNameToLoad[512] = {0};
 uistate UIState = NOVIDEO; 
 video_decoder *VideoDecoder;
 thread_manager ThreadList;
-bool stop = false;
-float CurrVideoTime = 0;
+bool VideoStop = false;
+double CurrVideoTime;
+double CurrFrameTime = 0;
 
+inline
 void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFramesMemory, GuiWindowFileDialogState *fileDialogState)
 {
 
@@ -48,7 +50,7 @@ void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFra
                     if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
                     {
                         printf("oi\n");
-                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder);//,&CurrVideoTime);
+                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder,&CurrVideoTime);
                         GetFirstFrame = false;
                     }
                 }
@@ -58,19 +60,20 @@ void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFra
     if(UIState == VIDEOSELECTED)
     {
         float currTime = GetFrameTime();
-        CurrVideoTime += currTime; 
+        CurrFrameTime += currTime; 
 
-        if (!stop)
+        if (!VideoStop)
             {
                 // videoState->currRealTime += currTime;
                 
-                printf("CurrVideoTime %f, Outro %f\n", CurrVideoTime,1/(float)VideoDecoder->Fps*2);
-                if (CurrVideoTime >= 1/(float)VideoDecoder->Fps || VideoDecoder->FrameToConvert == 0)
+                printf("CurrFrameTime %f, Outro %f\n", CurrFrameTime,1/(float)VideoDecoder->Fps*2);
+                printf("Real Video Time %lf\n",CurrVideoTime);
+                if (CurrFrameTime >= 1/(float)VideoDecoder->Fps || VideoDecoder->FrameToConvert == 0)
                 {  
                     if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
                     {
-                        CurrVideoTime = 0;
-                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder);//,&CurrVideoTime);
+                        CurrFrameTime = 0;
+                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder,&CurrVideoTime);
                     }
                 }
             }
