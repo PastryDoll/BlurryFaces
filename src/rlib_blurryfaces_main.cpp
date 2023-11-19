@@ -1,7 +1,6 @@
 #include "rlib_blurryfaces_renderer.cpp"
+#include "blurryfaces_output.cpp"
 
-#define SCREEN_WIDTH 1000
-#define SCREEN_HEIGHT 600
 
 int main(void)
 {   
@@ -10,6 +9,7 @@ int main(void)
 
     frame_work_queue_memory *FrameQueueMemory = InitializeFrameQueueMemory();
     frames_memory *RlFramesMemory = InitializeFramesMemory();
+    CreateProject();
 
     SetTargetFPS(120);
     GuiWindowFileDialogState fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());

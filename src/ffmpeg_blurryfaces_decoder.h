@@ -23,6 +23,7 @@ struct frame_work_queue_memory //We need to free this
 
 };
 
+// TODO Maybe optimize this struct.. maybe divide into multiple structs
 struct video_decoder 
 {
 

@@ -6,7 +6,7 @@ void Pause(bool *Stop)
 }
 
 inline
-void Controller(video_decoder *VideoDecoder, u8 **TempFrame, bool *Stop)
+void Controller(video_decoder *VideoDecoder, void *Frame, bool *Stop)
 {
     // static int currNumberFaces = 1;
     // bool insideAnyFace = false;
@@ -19,18 +19,7 @@ void Controller(video_decoder *VideoDecoder, u8 **TempFrame, bool *Stop)
 
     if (IsKeyPressed(KEY_RIGHT))
     {
-        bool GetFirstFrame = true;
-        while(GetFirstFrame)
-        {
-            if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
-            {
-                *TempFrame = GetFrame(VideoDecoder);
-                GetFirstFrame = false;
-                *Stop = true;
-                printf("FrameToFill: %llu, FrameToRender: %llu, -FrameToGrab: %llu, FrameToConvert %llu\n", VideoDecoder->FrameToFill, VideoDecoder->FrameToRender,VideoDecoder->FrameToGrab,(VideoDecoder->FrameToConvert-1));
-
-            }
-        }
+        GetForcedFrame(VideoDecoder, Frame, Stop);
     }
 
     static int CounterArrowPressed = 0;
@@ -38,20 +27,10 @@ void Controller(video_decoder *VideoDecoder, u8 **TempFrame, bool *Stop)
     if (IsKeyDown(KEY_RIGHT))
     {
         CounterArrowPressed++;
-        printf("Coutner %i\n",CounterArrowPressed);
+        // printf("Coutner %i\n",CounterArrowPressed);
         if (CounterArrowPressed > 40)
         {
-            bool GetFirstFrame = true;
-            while(GetFirstFrame)
-            {
-                if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
-                {
-                    *TempFrame = GetFrame(VideoDecoder);
-                    GetFirstFrame = false;
-                    *Stop = true;
-                    printf("FrameToFill: %llu, FrameToRender: %llu, -FrameToGrab: %llu, FrameToConvert %llu\n", VideoDecoder->FrameToFill, VideoDecoder->FrameToRender,VideoDecoder->FrameToGrab,(VideoDecoder->FrameToConvert-1));
-                }
-            }
+            GetForcedFrame(VideoDecoder, Frame, Stop);
         }
     }
 
@@ -68,9 +47,9 @@ void Controller(video_decoder *VideoDecoder, u8 **TempFrame, bool *Stop)
     // }
 
 
-    int CurrentGesture = GetGestureDetected();
-    float MouseX = GetMouseX();
-    float MouseY = GetMouseY();
+    // int CurrentGesture = GetGestureDetected();
+    // float MouseX = GetMouseX();
+    // float MouseY = GetMouseY();
 
     // for (int i = 0; i < currNumberFaces; i++)
     // {
