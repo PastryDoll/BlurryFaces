@@ -1,7 +1,5 @@
-#include "ffmpeg_decoder_memory.cpp"
-
-#include <assert.h>
-
+#include "ffmpeg_blurryfaces_decoder.h"
+#include "ffmpeg_blurryfaces_decoder_memory.cpp"
 
 #define VIDEO_WIDTH 500
 #define VIDEO_HEIGHT 500
@@ -114,11 +112,11 @@ void* DoConvertion(void* arg)
 }
 
 inline
-u8 *GetFrame(video_decoder *VideoDecoder, double *CurrVideoTime)
+u8 *GetFrame(video_decoder *VideoDecoder)
 {
     assert(VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab);
     frame_work_queue_memory* FramePtr = VideoDecoder->FrameQueue + (VideoDecoder->FrameToRender)%RingSize;
-    *CurrVideoTime = (double)FramePtr->pRGBFrame->pts*VideoDecoder->TimeBase;
+    VideoDecoder->CurrVideoTime = (double)FramePtr->pRGBFrame->pts*VideoDecoder->TimeBase;
     __sync_add_and_fetch(&VideoDecoder->FrameToRender,1);
     dispatch_semaphore_signal(VideoDecoder->SemaphoreConvertion);
     return FramePtr->pRGBFrame->data[0];
@@ -167,20 +165,24 @@ video_decoder *InitializeVideo(const char *path, frame_work_queue_memory *FrameQ
 
     video_decoder *VideoDecoder = (video_decoder*)malloc(sizeof(video_decoder));
     VideoDecoder->FrameQueue = FrameQueueMemory;
-    VideoDecoder->FrameToConvert = 0;
-    VideoDecoder->FrameToRender = 0;
-    VideoDecoder->TimeBase = time_base;
-
     VideoDecoder->pFormatContext = pFormatContext;
     VideoDecoder->pVideoCodecCtx = pVideoCodecCtx;
-    VideoDecoder->VideoStreamIndex = videoStreamIndex;
     VideoDecoder->pPacket = av_packet_alloc();
+    VideoDecoder->VideoStreamIndex = videoStreamIndex;
+
+    VideoDecoder->FrameToFill = 0;
+    VideoDecoder->FrameToConvert = 0;
+    VideoDecoder->FrameToGrab = 0;
+    VideoDecoder->FrameToRender = 0;
+
+    VideoDecoder->TimeBase = time_base;
+    VideoDecoder->CurrVideoTime = 0;
     VideoDecoder->Duration = duration;
     VideoDecoder->Fps = FPS;
 
+
     pthread_t DecoderThread = {0};
     pthread_t ConvertThread = {0};
-
     VideoDecoder->threads[0] = DecoderThread;
     VideoDecoder->threads[1] = ConvertThread;
 

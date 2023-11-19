@@ -1,4 +1,4 @@
-#include "rlib_rederer.cpp"
+#include "rlib_blurryfaces_renderer.cpp"
 
 #define SCREEN_WIDTH 1000
 #define SCREEN_HEIGHT 600
@@ -7,7 +7,7 @@ int main(void)
 {   
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "BlurryFaces");
-    
+
     frame_work_queue_memory *FrameQueueMemory = InitializeFrameQueueMemory();
     frames_memory *RlFramesMemory = InitializeFramesMemory();
 

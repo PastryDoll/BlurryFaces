@@ -1,4 +1,5 @@
-#include "rlib_renderer_memory.cpp"
+#include "../externals/raylib/lib/raylib.h"
+#include "../externals/raylib/lib/rlgl.h"
 
 #define RAYGUI_IMPLEMENTATION
 #include "../externals/raygui/raygui.h"
@@ -6,6 +7,13 @@
 #undef RAYGUI_IMPLEMENTATION            // Avoid including raygui implementation again
 #define GUI_WINDOW_FILE_DIALOG_IMPLEMENTATION
 #include "../externals/raygui/gui_window_file_dialog.h"
+
+#include "blurryfaces_types.h"
+#include "rlib_blurryfaces_renderer.h"
+
+#include "ffmpeg_blurryfaces_decoder.cpp"
+#include "rlib_blurryfaces_renderer_memory.cpp"
+#include "rlib_blurryfaces_controller.cpp"
 
 enum uistate 
 {
@@ -25,6 +33,7 @@ inline
 void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFramesMemory, GuiWindowFileDialogState *fileDialogState)
 {
 
+    // Video Selection - CleanOld - Initialize New - Grab First Frame
     if (fileDialogState->SelectFilePressed)
         {
             if (IsFileExtension(fileDialogState->fileNameText, ".mp4") ||
@@ -44,13 +53,12 @@ void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFra
                 UIState = VIDEOSELECTED;
                 fileDialogState->SelectFilePressed = false;
                 bool GetFirstFrame = true;
-
                 while(GetFirstFrame)
                 {
                     if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
                     {
                         printf("oi\n");
-                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder,&CurrVideoTime);
+                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder);
                         GetFirstFrame = false;
                     }
                 }
@@ -59,21 +67,20 @@ void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFra
         }
     if(UIState == VIDEOSELECTED)
     {
+        Controller(VideoDecoder, &RlFramesMemory->TempFramePtr,&VideoStop);
         float currTime = GetFrameTime();
         CurrFrameTime += currTime; 
 
         if (!VideoStop)
             {
-                // videoState->currRealTime += currTime;
-                
-                printf("CurrFrameTime %f, Outro %f\n", CurrFrameTime,1/(float)VideoDecoder->Fps*2);
+                // printf("CurrFrameTime %f, Outro %f\n", CurrFrameTime,1/(float)VideoDecoder->Fps*2);
                 printf("Real Video Time %lf\n",CurrVideoTime);
                 if (CurrFrameTime >= 1/(float)VideoDecoder->Fps || VideoDecoder->FrameToConvert == 0)
                 {  
                     if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
                     {
                         CurrFrameTime = 0;
-                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder,&CurrVideoTime);
+                        RlFramesMemory->TempFramePtr = GetFrame(VideoDecoder);
                     }
                 }
             }

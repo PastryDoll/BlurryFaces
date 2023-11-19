@@ -1,6 +1,3 @@
-#include "rlib_renderer.h"
-#include <stdlib.h>
-
 frames_memory *InitializeFramesMemory()
 {
     frames_memory *Memory = (frames_memory *)malloc(sizeof(frames_memory));

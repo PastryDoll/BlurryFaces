@@ -1,5 +1,3 @@
-#include "ffmpeg_decoder.h"
-
 #define TARGET_WIDTH 640
 #define TARGET_HEIGHT 480
 

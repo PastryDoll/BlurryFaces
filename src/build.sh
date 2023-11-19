@@ -32,4 +32,4 @@ LIBS_PATHS="-L/opt/homebrew/lib"
 
 INCLUDE_PATHS="-I../externals/raylib/lib -I/opt/homebrew/include -I/opt/homebrew/include/opencv4"
 
-clang++ $DEBUG_FLAG $FLAGS $FRAMEWORKS rlib_blurryface_main.cpp -o BlurryFaces $INCLUDE_PATHS $LIBS $LIBS_PATHS
+clang++ $DEBUG_FLAG $FLAGS $FRAMEWORKS rlib_blurryfaces_main.cpp -o BlurryFaces $INCLUDE_PATHS $LIBS $LIBS_PATHS

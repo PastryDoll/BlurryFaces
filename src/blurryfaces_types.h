@@ -1,5 +1,9 @@
 #include <stdint.h>
 #include <pthread.h>
+#include <stdlib.h>
+#include <assert.h>
+
+
 
 typedef uint8_t u8;
 typedef uint16_t u16;

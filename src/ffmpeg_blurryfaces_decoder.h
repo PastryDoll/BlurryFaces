@@ -1,4 +1,3 @@
-#include "blurryface_types.h"
 #include <dispatch/dispatch.h>
 
 extern "C" {
@@ -7,7 +6,7 @@ extern "C" {
     #include <libswscale/swscale.h>
 }
 
-const int RingSize = 16;
+const int RingSize = 32;
 
 struct thread_manager 
 {
@@ -26,19 +25,20 @@ struct frame_work_queue_memory //We need to free this
 
 struct video_decoder 
 {
-    frame_work_queue_memory *FrameQueue;
 
     AVFormatContext *pFormatContext;
     AVCodecContext *pVideoCodecCtx;
     AVPacket *pPacket;
     s32 VideoStreamIndex;
 
+    frame_work_queue_memory *FrameQueue;
     u64 volatile FrameToFill;
     u64 volatile FrameToConvert;
     u64 volatile FrameToGrab;
     u64 volatile FrameToRender;
 
     double TimeBase;
+    double CurrVideoTime;
     float Duration;
     u8 Fps;
 
