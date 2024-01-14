@@ -35,7 +35,7 @@ double CurrVideoTime;
 double CurrFrameTime = 0;
 
 inline
-void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFramesMemory, GuiWindowFileDialogState *fileDialogState)
+void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFramesMemory, face *Face, GuiWindowFileDialogState *fileDialogState)
 {
 
     // Video Selection - CleanOld - Initialize New - Grab First Frame
@@ -58,12 +58,12 @@ void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFra
                 UIState = VIDEOSELECTED;
                 fileDialogState->SelectFilePressed = false;
                 // Present the first frame of the video
-                GetForcedFrame(VideoDecoder,RlFramesMemory->FrameImage.data, &VideoStop);
+                RlFramesMemory->TempFramePtr = GetForcedFrame(VideoDecoder,RlFramesMemory->FrameImage.data, &VideoStop);
             }
         }
     if(UIState == VIDEOSELECTED)
     {
-        Controller(VideoDecoder, RlFramesMemory->FrameImage.data,&VideoStop);
+        Controller(VideoDecoder, RlFramesMemory->FrameImage.data, Face, &VideoStop);
         float currTime = GetFrameTime();
         CurrFrameTime += currTime; 
 
@@ -82,6 +82,17 @@ void DoRendering(frame_work_queue_memory *FrameQueueMemory, frames_memory *RlFra
                 }
             }
         }
+
+
+        float x = ((Face->Box.x - 500)/500)*TARGET_WIDTH;
+        float y = (Face->Box.y/500)*TARGET_HEIGHT;
+        float w = (Face->Box.width/500)*TARGET_WIDTH;
+        float h = (Face->Box.height/500)*TARGET_HEIGHT;
+        // ImageCrop(&VideoDecoder->image, (Rectangle){x,y,w,h}); 
+        RlFramesMemory->FrameTempImage = ImageFromImage(RlFramesMemory->FrameImage, (Rectangle){x,y,w,h});
+        ImageBlurGaussian(&RlFramesMemory->FrameTempImage,15);
+        ImageDraw(&RlFramesMemory->FrameImage, RlFramesMemory->FrameTempImage, (Rectangle){0, 0, (float) RlFramesMemory->FrameTempImage.width, (float) RlFramesMemory->FrameTempImage.height},(Rectangle){x , y, w, h}, WHITE);
+        UnloadImage(RlFramesMemory->FrameTempImage); //big memory leak :p... for now. In the future we should
         UpdateTexture(RlFramesMemory->DisplayTexture, RlFramesMemory->FrameImage.data);
     }
     

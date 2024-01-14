@@ -1,4 +1,4 @@
-struct Face
+struct face
 {
     Rectangle Box;
     bool IsInside;

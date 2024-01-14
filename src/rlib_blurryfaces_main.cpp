@@ -9,6 +9,7 @@ int main(void)
 
     frame_work_queue_memory *FrameQueueMemory = InitializeFrameQueueMemory();
     frames_memory *RlFramesMemory = InitializeFramesMemory();
+    face Face = {};
     CreateProject();
 
     SetTargetFPS(120);
@@ -16,7 +17,7 @@ int main(void)
 
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {   
-        DoRendering(FrameQueueMemory, RlFramesMemory, &fileDialogState);
+        DoRendering(FrameQueueMemory, RlFramesMemory, &Face, &fileDialogState);
 
     }
 

@@ -69,7 +69,7 @@ void* DoConvertion(void* arg)
         // What happens is that when we update the texture we can be using previous frame...
         // i.e lets say we grab RGB framecounttoshow 10... we make a texture and uptade framecountoshow 11
         // now framecounttoshow 10 can be changed and we will keep updating the texture with it untill we get right FPS
-        if (OriginalFrameToConvert - VideoDecoder->FrameToRender < RingSize)
+        if (OriginalFrameToConvert - VideoDecoder->FrameToRender < RingSize-1)
         {
 
             if ((OriginalFrameToConvert < VideoDecoder->FrameToFill) && VideoDecoder->FrameToFill > 0) //If frameCount too close to NextEntry it fails.. idk why for now
@@ -123,17 +123,18 @@ u8 *GetFrame(video_decoder *VideoDecoder)
 }
 
 inline 
-void GetForcedFrame(video_decoder *VideoDecoder, void *Frame, bool *Stop)
+u8 * GetForcedFrame(video_decoder *VideoDecoder, void *Frame, bool *Stop)
 {
     bool GetFirstFrame = true;
+    u8 *TempFramePtr = {0};
     while(GetFirstFrame)
     {
         if (VideoDecoder->FrameToRender < VideoDecoder->FrameToGrab)
         {
-            memcpy(Frame,GetFrame(VideoDecoder),TARGET_WIDTH*TARGET_HEIGHT*3);
+            TempFramePtr = GetFrame(VideoDecoder);
+            memcpy(Frame,TempFramePtr,TARGET_WIDTH*TARGET_HEIGHT*3);
             GetFirstFrame = false;
             *Stop = true;
-            // printf("FrameToFill: %llu, FrameToRender: %llu, -FrameToGrab: %llu, FrameToConvert %llu\n", VideoDecoder->FrameToFill, VideoDecoder->FrameToRender,VideoDecoder->FrameToGrab,(VideoDecoder->FrameToConvert-1));
 
         }
         else if ((VideoDecoder->FrameToRender == VideoDecoder->FrameToGrab) && VideoDecoder->FrameToRender != 0)
@@ -142,6 +143,7 @@ void GetForcedFrame(video_decoder *VideoDecoder, void *Frame, bool *Stop)
             GetFirstFrame = false;
         }
     }
+    return TempFramePtr;
 }
 
 video_decoder *InitializeVideo(const char *path, frame_work_queue_memory *FrameQueueMemory)

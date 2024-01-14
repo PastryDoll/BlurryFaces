@@ -6,7 +6,7 @@ void Pause(bool *Stop)
 }
 
 inline
-void Controller(video_decoder *VideoDecoder, void *Frame, bool *Stop)
+void Controller(video_decoder *VideoDecoder, void *Frame, face *Face, bool *Stop)
 {
     // static int currNumberFaces = 1;
     // bool insideAnyFace = false;
@@ -47,13 +47,13 @@ void Controller(video_decoder *VideoDecoder, void *Frame, bool *Stop)
     // }
 
 
-    // int CurrentGesture = GetGestureDetected();
-    // float MouseX = GetMouseX();
-    // float MouseY = GetMouseY();
+    int CurrentGesture = GetGestureDetected();
+    float MouseX = GetMouseX();
+    float MouseY = GetMouseY();
 
     // for (int i = 0; i < currNumberFaces; i++)
     // {
-    //     Face *face = videoState->face + i;
+    //     Face *face = videoState->face + i;        
     //     if (CheckCollisionPointRec((Vector2){(float)GetMouseX(),(float)GetMouseY()},(Rectangle){face->Box.x,face->Box.y,face->Box.width,face->Box.height}) && (face->done))
     //     {
     //         insideAnyFace = true;
@@ -110,6 +110,25 @@ void Controller(video_decoder *VideoDecoder, void *Frame, bool *Stop)
 
     //         }
     //     }
+    if ((CurrentGesture & (GESTURE_TAP|GESTURE_HOLD)) && !Face->IsDone)// && !insideAnyFace)
+    {
+        Face->Box.x = MouseX;
+        Face->Box.y = MouseY;
+        Face->Box.width = 0;
+        Face->Box.height = 0;
+    }
+    if ((CurrentGesture == GESTURE_DRAG) && !Face->IsDone)// && !insideAnyFace)
+    {   
+            Face->Box.width = MouseX - Face->Box.x;
+            Face->Box.height = MouseY - Face->Box.y;
+
+    }
+    if (Face->Box.width > 0 && CurrentGesture == GESTURE_NONE && !Face->IsDone) 
+    {
+        printf("done\n");
+        Face->IsDone = true;
+        // currNumberFaces++;
+    } 
     //     //Ended Drawing box
     //     if (face->Box.width > 0 && currentGesture == GESTURE_NONE && !face->done) 
     //     {
